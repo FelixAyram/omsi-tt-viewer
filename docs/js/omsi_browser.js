@@ -15,7 +15,11 @@ async function getChildDirHandle(parent, ...names) {
     }
   }
   for await (const [name, handle] of parent.entries()) {
-    if (handle.kind === "directory" && names.some((n) => n.toLowerCase() === name.toLowerCase())) {
+    if (handle.kind !== "directory") continue;
+    if (!names.some((n) => n.toLowerCase() === name.toLowerCase())) continue;
+    try {
+      return await parent.getDirectoryHandle(name);
+    } catch {
       return handle;
     }
   }
@@ -80,12 +84,15 @@ async function getFileHandleInsensitive(dirHandle, baseName) {
   }
   try {
     for await (const [name, handle] of dirHandle.entries()) {
-      if (handle.kind === "file" && name.toLowerCase() === want) {
+      if (handle.kind !== "file" || name.toLowerCase() !== want) continue;
+      try {
+        return await dirHandle.getFileHandle(name);
+      } catch {
         return handle;
       }
     }
   } catch {
-    // entries puede fallar en subcarpetas sin permiso explícito
+    // entries puede fallar
   }
   throw new Error(`No se encontró ${baseName}`);
 }
@@ -147,7 +154,53 @@ function canonicalMapPrefix(mapRelDir) {
   return `maps/${folder}`;
 }
 
-// Recorre el mapa leyendo cada archivo desde la raíz OMSI (evita fallos de entry.getFile()).
+function shouldSkipMapSubdir(name) {
+  return name.startsWith("_") || name.toLowerCase() === "copia";
+}
+
+async function seedMapRootFiles(rootHandle, basePath, canonPrefix, fileMap, tileHints = new Set()) {
+  const mapDirHandle = await navigateFromRoot(rootHandle, basePath);
+
+  try {
+    const gf = await getFileHandleInsensitive(mapDirHandle, "global.cfg");
+    fileMap.set(`${canonPrefix}/global.cfg`, await gf.getFile());
+  } catch {
+    try {
+      fileMap.set(`${canonPrefix}/global.cfg`, await readFileFromRoot(rootHandle, `${basePath}/global.cfg`));
+    } catch {
+      // se reintentará al procesar
+    }
+  }
+
+  for (const k of fileMap.keys()) {
+    const m = /\/(tile_-?\d+_-?\d+\.map)$/i.exec(normPath(k));
+    if (m) tileHints.add(m[1]);
+  }
+  try {
+    for await (const [name] of mapDirHandle.entries()) {
+      if (/^tile_-?\d+_-?\d+\.map$/i.test(name)) tileHints.add(name);
+    }
+  } catch {
+    // omitir
+  }
+
+  for (const tileName of tileHints) {
+    const canon = `${canonPrefix}/${tileName}`;
+    if (fileMap.has(canon)) continue;
+    try {
+      const fh = await getFileHandleInsensitive(mapDirHandle, tileName);
+      fileMap.set(canon, await fh.getFile());
+    } catch {
+      try {
+        fileMap.set(canon, await readFileFromRoot(rootHandle, `${basePath}/${tileName}`));
+      } catch {
+        // tile no en raíz del mapa
+      }
+    }
+  }
+}
+
+// Recorre subcarpetas del mapa (TTData, texture…). La raíz del mapa va en seedMapRootFiles.
 async function collectDirFromRoot(rootHandle, diskPath, canonPrefix, fileMap) {
   const dirHandle = await navigateFromRoot(rootHandle, diskPath);
   const entries = [];
@@ -159,23 +212,20 @@ async function collectDirFromRoot(rootHandle, diskPath, canonPrefix, fileMap) {
     const diskChild = `${diskPath}/${name}`;
     const canonChild = `${canonPrefix}/${name}`;
 
-    const looksLikeFile =
-      kind === "file" || /\.(map|cfg|ttr|txt|osn|prt|bmp|rdy)$/i.test(name) || /^global\.cfg$/i.test(name);
-
-    if (looksLikeFile) {
-      try {
-        const file = await readFileFromRoot(rootHandle, diskChild);
-        fileMap.set(normPath(canonChild), file);
-        continue;
-      } catch {
-        // puede ser subcarpeta mal tipada
-      }
+    if (kind === "directory") {
+      if (shouldSkipMapSubdir(name)) continue;
+      await collectDirFromRoot(rootHandle, diskChild, canonChild, fileMap);
+      continue;
     }
-    if (kind === "directory" || !looksLikeFile) {
+
+    try {
+      const fh = await getFileHandleInsensitive(dirHandle, name);
+      fileMap.set(normPath(canonChild), await fh.getFile());
+    } catch {
       try {
-        await collectDirFromRoot(rootHandle, diskChild, canonChild, fileMap);
+        fileMap.set(normPath(canonChild), await readFileFromRoot(rootHandle, diskChild));
       } catch {
-        // ignorar subcarpetas inaccesibles
+        // omitir archivo
       }
     }
   }
@@ -184,32 +234,40 @@ async function collectDirFromRoot(rootHandle, diskPath, canonPrefix, fileMap) {
 async function collectMapTreeFromRoot(rootHandle, mapRelDir, fileMap) {
   const basePath = await resolveMapBasePath(rootHandle, mapRelDir);
   const canonPrefix = canonicalMapPrefix(mapRelDir);
+
+  await seedMapRootFiles(rootHandle, basePath, canonPrefix, fileMap);
   await collectDirFromRoot(rootHandle, basePath, canonPrefix, fileMap);
+  await seedMapRootFiles(rootHandle, basePath, canonPrefix, fileMap);
+}
 
-  // Asegurar global.cfg y tiles aunque entries() no liste archivos sueltos en la raíz
+async function collectMapTreeFromHandle(mapHandle, mapRelDir, fileMap) {
+  const canonPrefix = canonicalMapPrefix(mapRelDir);
+  await seedMapRootFromHandle(mapHandle, canonPrefix, fileMap);
+  await collectDirFromHandle(mapHandle, canonPrefix, fileMap);
+  await seedMapRootFromHandle(mapHandle, canonPrefix, fileMap);
+}
+
+async function seedMapRootFromHandle(mapHandle, canonPrefix, fileMap, tileHints = new Set()) {
   try {
-    const gf = await readFileFromRoot(rootHandle, `${basePath}/global.cfg`);
-    fileMap.set(`${canonPrefix}/global.cfg`, gf);
+    const gf = await getFileHandleInsensitive(mapHandle, "global.cfg");
+    fileMap.set(`${canonPrefix}/global.cfg`, await gf.getFile());
   } catch {
-    // ya intentado en el árbol
+    // omitir
   }
-
-  const dirHandle = await navigateFromRoot(rootHandle, basePath);
-  for await (const [name, entry] of dirHandle.entries()) {
-    if (!/^tile_-?\d+_-?\d+\.map$/i.test(name)) continue;
-    const canon = `${canonPrefix}/${name}`;
+  for (const k of fileMap.keys()) {
+    const m = /\/(tile_-?\d+_-?\d+\.map)$/i.exec(normPath(k));
+    if (m) tileHints.add(m[1]);
+  }
+  for await (const [name] of mapHandle.entries()) {
+    if (/^tile_-?\d+_-?\d+\.map$/i.test(name)) tileHints.add(name);
+  }
+  for (const tileName of tileHints) {
+    const canon = `${canonPrefix}/${tileName}`;
     if (fileMap.has(canon)) continue;
     try {
-      const file = await readFileFromRoot(rootHandle, `${basePath}/${name}`);
-      fileMap.set(canon, file);
+      fileMap.set(canon, await readFileFromHandle(mapHandle, tileName));
     } catch {
-      if (entry.kind === "file") {
-        try {
-          fileMap.set(canon, await entry.getFile());
-        } catch {
-          // omitir tile
-        }
-      }
+      // omitir
     }
   }
 }
@@ -222,47 +280,28 @@ async function collectDirFromHandle(dirHandle, canonPrefix, fileMap) {
 
   for (const { name, kind } of entries) {
     const canonChild = `${canonPrefix}/${name}`;
-    const tryFile = kind === "file" || /\.(map|cfg|ttr|txt|osn)$/i.test(name) || /^global\.cfg$/i.test(name);
-
-    if (tryFile) {
-      try {
-        const file = await readFileFromHandle(dirHandle, name);
-        fileMap.set(normPath(canonChild), file);
-        continue;
-      } catch {
-        // intentar como carpeta
-      }
-    }
     if (kind === "directory") {
+      if (shouldSkipMapSubdir(name)) continue;
       try {
         const sub = await dirHandle.getDirectoryHandle(name);
         await collectDirFromHandle(sub, canonChild, fileMap);
       } catch {
         // omitir
       }
+      continue;
     }
-  }
-}
-
-async function collectMapTreeFromHandle(mapHandle, mapRelDir, fileMap) {
-  const canonPrefix = canonicalMapPrefix(mapRelDir);
-  await collectDirFromHandle(mapHandle, canonPrefix, fileMap);
-  try {
-    const gf = await readFileFromHandle(mapHandle, "global.cfg");
-    fileMap.set(`${canonPrefix}/global.cfg`, gf);
-  } catch {
-    // omitir
-  }
-  for await (const [name] of mapHandle.entries()) {
-    if (!/^tile_-?\d+_-?\d+\.map$/i.test(name)) continue;
-    const canon = `${canonPrefix}/${name}`;
-    if (fileMap.has(canon)) continue;
     try {
-      fileMap.set(canon, await readFileFromHandle(mapHandle, name));
+      fileMap.set(normPath(canonChild), await readFileFromHandle(dirHandle, name));
     } catch {
       // omitir
     }
   }
+}
+
+export async function ensureMapRootInFileMap(rootHandle, mapRelDir, fileMap) {
+  const basePath = await resolveMapBasePath(rootHandle, mapRelDir);
+  const canonPrefix = canonicalMapPrefix(mapRelDir);
+  await seedMapRootFiles(rootHandle, basePath, canonPrefix, fileMap);
 }
 
 // Valida maps/, Splines/, Sceneryobjects/ sin leer todo el árbol.

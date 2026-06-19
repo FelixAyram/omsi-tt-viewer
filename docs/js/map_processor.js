@@ -5,7 +5,8 @@ import {
   buildMapFileMapLazy,
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
-} from "./omsi_browser.js?v=9";
+  ensureMapRootInFileMap,
+} from "./omsi_browser.js?v=10";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -13,7 +14,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=9";
+} from "./geometry.js?v=10";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -352,9 +353,25 @@ function resolveFile(index, relPath, omsiPrefix = "") {
 }
 
 
+function pickTilePaths(files, mapDir) {
+  const folder = normPath(mapDir).split("/").pop();
+  const mapPrefixRe = new RegExp(
+    `(^|/)maps/${folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+    "i",
+  );
+  let tiles = [...files.keys()].filter((k) => {
+    const n = normPath(k);
+    return mapPrefixRe.test(n) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+  });
+  const primary = tiles.filter((t) => !/_test_ttdata|\/copia\//i.test(normPath(t)));
+  if (primary.length) tiles = primary;
+  if (!tiles.length) return [];
+  const minDepth = Math.min(...tiles.map((t) => normPath(t).split("/").length));
+  return tiles.filter((t) => normPath(t).split("/").length === minDepth);
+}
+
 function resolveMapContext(files, mapDir) {
   const folder = normPath(mapDir).split("/").pop();
-  const folderLower = folder.toLowerCase();
   const mapPrefixRe = new RegExp(
     `(^|/)maps/${folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
     "i",
@@ -364,15 +381,12 @@ function resolveMapContext(files, mapDir) {
     const n = normPath(k);
     return mapPrefixRe.test(n) && /global\.cfg$/i.test(n);
   });
-  const tileCount = [...files.keys()].filter((k) => {
-    const n = normPath(k);
-    return mapPrefixRe.test(n) && /tile_-?\d+_-?\d+\.map$/i.test(n);
-  }).length;
+  const tilePaths = pickTilePaths(files, mapDir);
 
-  if (globalKey && tileCount > 0) {
+  if (globalKey && tilePaths.length > 0) {
     const globalNorm = normPath(globalKey);
     const prefix = globalNorm.slice(0, globalNorm.length - "global.cfg".length);
-    return { prefix, globalKey, globalFile: files.get(globalKey) };
+    return { prefix, globalKey, globalFile: files.get(globalKey), tilePaths };
   }
 
   const prefix = resolveMapPrefixInFileMap(files, mapDir);
@@ -380,18 +394,15 @@ function resolveMapContext(files, mapDir) {
     const n = normPath(k);
     return n.startsWith(prefix) && /global\.cfg$/i.test(n);
   });
-  const tileCount2 = [...files.keys()].filter((k) => {
-    const n = normPath(k);
-    return n.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(n);
-  }).length;
-  if (globalKey2 && tileCount2 > 0) {
-    return { prefix, globalKey: globalKey2, globalFile: files.get(globalKey2) };
+  const tilePaths2 = pickTilePaths(files, mapDir);
+  if (globalKey2 && tilePaths2.length > 0) {
+    return { prefix, globalKey: globalKey2, globalFile: files.get(globalKey2), tilePaths: tilePaths2 };
   }
 
   const keysSample = [...files.keys()].slice(0, 15).join("\n  ");
   throw new Error(
     `No se encontró global.cfg con tiles en ${mapDir}. ` +
-      `Archivos en memoria: ${files.size}. ` +
+      `Archivos en memoria: ${files.size}. Tiles candidatos: ${tilePaths.length}. ` +
       (keysSample ? `Muestra:\n  ${keysSample}` : "fileMap vacío."),
   );
 }
@@ -521,7 +532,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   const globalText = await readText(ctx.globalFile);
   const mapName = parseGlobalName(globalText) || mapDir.split("/").pop();
 
-  const tileFiles = [...fileMap.keys()].filter((p) => {
+  const tileFiles = ctx.tilePaths ?? [...fileMap.keys()].filter((p) => {
     const n = normPath(p);
     return n.toLowerCase().startsWith(prefix.toLowerCase()) && /tile_-?\d+_-?\d+\.map$/i.test(n);
   });
@@ -857,6 +868,9 @@ export async function loadMapLazy(omsiRoot, mapDir, onProgress = () => {}) {
       collectAssetRefsFromMapFiles,
       onProgress,
     );
+  }
+  if (omsiRoot.mode === "fsa" || omsiRoot.mode === "fsa-combined") {
+    await ensureMapRootInFileMap(omsiRoot.rootHandle, mapDir, fileMap);
   }
   return processMapFolder(fileMap, mapDir, onProgress);
 }
