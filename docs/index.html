@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OMSI 2 — Visor de rieles y rutas</title>
+  <meta name="description" content="Visualiza rieles, busstops y rutas TTData de mapas OMSI 2." />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>OMSI 2 — Visor de rieles</h1>
+      <p>Rieles del mapa, paradas y rutas (.ttr) con colores estilo cronología</p>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <section class="panel">
+          <h2>Mapa</h2>
+          <select id="mapSelect" aria-label="Mapa-group precargado"></select>
+          <label class="file-upload">
+            <span>Subir JSON exportado</span>
+            <input type="file" id="fileInput" accept=".json,application/json" />
+          </label>
+          <p id="stats" class="stats"></p>
+        </section>
+
+        <section class="panel">
+          <h2>Capas</h2>
+          <label class="check"><input type="checkbox" id="showAllRails" checked /> Mostrar todos los rieles</label>
+          <label class="check"><input type="checkbox" id="showFreeOnly" /> Solo rieles libres (inicio)</label>
+          <label class="check"><input type="checkbox" id="showBusstops" checked /> Busstops</label>
+          <button type="button" id="resetView" class="btn-secondary">Centrar vista</button>
+        </section>
+
+        <section class="panel">
+          <h2>Rutas (.ttr)</h2>
+          <div id="routeList" class="route-list"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Leyenda</h2>
+          <div id="legend" class="legend"></div>
+        </section>
+
+        <section class="panel info">
+          <h2>Detalle</h2>
+          <div id="infoPanel"><em>Clic en un riel para ver detalles</em></div>
+        </section>
+      </aside>
+
+      <main class="map-wrap">
+        <canvas id="mapCanvas" aria-label="Mapa de rieles"></canvas>
+        <p class="hint">Arrastra para mover · rueda para zoom · clic en riel para info</p>
+      </main>
+    </div>
+  </div>
+
+  <script type="module" src="js/viewer.js"></script>
+</body>
+</html>

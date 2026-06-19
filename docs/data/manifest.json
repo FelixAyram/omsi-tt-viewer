@@ -1,0 +1,9 @@
+{
+  "maps": [
+    {
+      "name": "Test_Lat30",
+      "label": "Test_Lat30 (demo)",
+      "file": "test_lat30.json"
+    }
+  ]
+}
