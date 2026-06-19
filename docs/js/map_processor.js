@@ -295,14 +295,72 @@ function resolveMapContext(files, mapDir) {
 }
 
 function findMaps(files) {
-  const maps = [];
+  const maps = new Set();
   for (const path of files.keys()) {
-    if (/\/global\.cfg$/i.test(path.replace(/\\/g, "/"))) {
-      const dir = path.replace(/\\/g, "/").replace(/\/global\.cfg$/i, "");
-      maps.push(dir);
-    }
+    const n = path.replace(/\\/g, "/");
+    const m = /\/maps\/([^/]+)\/global\.cfg$/i.exec(n);
+    if (!m) continue;
+    const mapName = m[1];
+    if (mapName.startsWith("_")) continue;
+    maps.add(n.replace(/\/global\.cfg$/i, ""));
   }
-  return maps.sort();
+  return [...maps].sort((a, b) => {
+    const na = a.split("/").pop().toLowerCase();
+    const nb = b.split("/").pop().toLowerCase();
+    return na.localeCompare(nb);
+  });
+}
+
+function findGlobalFile(fileMap, mapDir) {
+  const target = `${mapDir.replace(/\\/g, "/")}/global.cfg`.toLowerCase();
+  for (const [k, f] of fileMap) {
+    if (k.replace(/\\/g, "/").toLowerCase() === target) return f;
+  }
+  return null;
+}
+
+/** Comprueba que la carpeta parece una instalación OMSI 2. */
+export function validateOmsiInstall(fileMap) {
+  const keys = [...fileMap.keys()].map((k) => k.replace(/\\/g, "/").toLowerCase());
+  const has = (fragment) => keys.some((k) => k.includes(`/${fragment}/`) || k.startsWith(`${fragment}/`));
+  const missing = [];
+  if (!has("maps")) missing.push("maps/");
+  if (!has("splines")) missing.push("Splines/");
+  if (!has("sceneryobjects")) missing.push("Sceneryobjects/");
+  if (missing.length) {
+    throw new Error(
+      `No parece la carpeta raíz de OMSI 2. Falta: ${missing.join(", ")}. ` +
+        "Selecciona la carpeta donde está omsi.exe (ej. …/steamapps/common/OMSI 2).",
+    );
+  }
+  const maps = findMaps(fileMap);
+  if (!maps.length) {
+    throw new Error("No se encontraron mapas en maps/*/global.cfg.");
+  }
+  return maps.length;
+}
+
+/** Lista mapas con nombre del global.cfg para el desplegable. */
+export async function listMapCatalog(fileMap) {
+  const dirs = findMaps(fileMap);
+  const entries = [];
+  for (const dir of dirs) {
+    const folder = dir.split("/").pop();
+    let label = folder;
+    const gf = findGlobalFile(fileMap, dir);
+    if (gf) {
+      try {
+        const name = parseGlobalName(await readText(gf));
+        if (name && name.toLowerCase() !== folder.toLowerCase()) {
+          label = `${folder} — ${name}`;
+        }
+      } catch {
+        /* usar nombre carpeta */
+      }
+    }
+    entries.push({ dir, folder, label });
+  }
+  return entries;
 }
 
 function detectOmsiPrefix(files) {
@@ -680,4 +738,4 @@ export function listMapsInFiles(fileMap) {
   return findMaps(fileMap);
 }
 
-export { detectOmsiPrefix };
+export { detectOmsiPrefix, findMaps };

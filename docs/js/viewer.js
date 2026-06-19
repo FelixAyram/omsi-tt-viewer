@@ -1,22 +1,17 @@
 import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js";
 import { distPointPolyline } from "./geometry.js";
-import {
-  loadFilesFromInput,
-  listMapsInFiles,
-  processMapFolder,
-  detectOmsiPrefix,
-  mergeFileMaps,
-} from "./map_processor.js";
+import { processMapFolder, validateOmsiInstall, listMapCatalog } from "./map_processor.js";
+import { pickOmsiFolder } from "./omsi_browser.js";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
 const mapSelect = document.getElementById("mapSelect");
+const omsiPathLabel = document.getElementById("omsiPathLabel");
+const pickOmsiBtn = document.getElementById("pickOmsiBtn");
+const omsiMapSelect = document.getElementById("omsiMapSelect");
+const loadOmsiMapBtn = document.getElementById("loadOmsiMapBtn");
 const routeList = document.getElementById("routeList");
 const fileInput = document.getElementById("fileInput");
-const folderInput = document.getElementById("folderInput");
-const assetsInput = document.getElementById("assetsInput");
-const localMapSelect = document.getElementById("localMapSelect");
-const loadLocalMapBtn = document.getElementById("loadLocalMapBtn");
 const showAllRails = document.getElementById("showAllRails");
 const showFreeOnly = document.getElementById("showFreeOnly");
 const showBusstops = document.getElementById("showBusstops");
@@ -32,7 +27,8 @@ let dragging = false;
 let lastPointer = { x: 0, y: 0 };
 let selectedRailId = null;
 let selectedRoutes = new Set();
-let pendingFileMap = null;
+let omsiFileMap = null;
+let omsiRootLabel = "";
 
 function railPoints(rail) {
   if (rail.points?.length >= 2) return rail.points;
@@ -116,7 +112,7 @@ function findRailAt(sx, sy, threshold = 8) {
   return best;
 }
 
-function strokeRail(points, style) {
+function strokeRail(points) {
   if (points.length < 2) return;
   ctx.beginPath();
   const first = worldToScreen(points[0][0], points[0][2]);
@@ -140,7 +136,7 @@ function draw() {
     ctx.fillStyle = "#8b95a8";
     ctx.font = "15px Segoe UI, system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Elige un mapa, sube JSON o abre carpeta OMSI", w / 2, h / 2);
+    ctx.fillText("Elige la carpeta OMSI 2 y carga un mapa", w / 2, h / 2);
     return;
   }
 
@@ -182,7 +178,7 @@ function draw() {
       ctx.strokeStyle = SELECTED.stroke;
     }
 
-    strokeRail(pts, null);
+    strokeRail(pts);
     ctx.shadowBlur = 0;
   }
 
@@ -298,7 +294,6 @@ async function applyData(json) {
   updateStats();
   populateRoutes();
   updateInfo(null);
-  progressEl.textContent = "";
   draw();
 }
 
@@ -306,11 +301,85 @@ function setProgress(msg) {
   progressEl.textContent = msg;
 }
 
+async function populateOmsiMapSelect() {
+  omsiMapSelect.disabled = true;
+  loadOmsiMapBtn.disabled = true;
+  omsiMapSelect.innerHTML = '<option value="">Indexando mapas…</option>';
+
+  const catalog = await listMapCatalog(omsiFileMap);
+  omsiMapSelect.innerHTML = `<option value="">— ${catalog.length} mapas —</option>`;
+  for (const entry of catalog) {
+    const opt = document.createElement("option");
+    opt.value = entry.dir;
+    opt.textContent = entry.label;
+    omsiMapSelect.appendChild(opt);
+  }
+  omsiMapSelect.disabled = false;
+  loadOmsiMapBtn.disabled = false;
+  setProgress(`${catalog.length} mapas en maps/ — elige uno y pulsa Cargar.`);
+}
+
+async function onOmsiFolderPicked(result) {
+  if (!result) return;
+  pickOmsiBtn.disabled = true;
+  setProgress("Leyendo instalación OMSI 2…");
+  try {
+    omsiFileMap = result.fileMap;
+    omsiRootLabel = result.label;
+    const count = validateOmsiInstall(omsiFileMap);
+    omsiPathLabel.textContent = omsiRootLabel;
+    omsiPathLabel.classList.remove("muted");
+    await populateOmsiMapSelect();
+    setProgress(`${count} mapas listos en ${omsiRootLabel}.`);
+  } catch (err) {
+    omsiFileMap = null;
+    omsiPathLabel.textContent = "Sin carpeta seleccionada";
+    omsiPathLabel.classList.add("muted");
+    omsiMapSelect.innerHTML = '<option value="">— Elige primero la carpeta OMSI 2 —</option>';
+    omsiMapSelect.disabled = true;
+    loadOmsiMapBtn.disabled = true;
+    alert(err.message || String(err));
+    setProgress("");
+  } finally {
+    pickOmsiBtn.disabled = false;
+  }
+}
+
+async function loadSelectedOmsiMap() {
+  const mapDir = omsiMapSelect.value;
+  if (!mapDir || !omsiFileMap) return;
+  try {
+    mapSelect.value = "";
+    setProgress(`Cargando ${mapDir.split("/").pop()}…`);
+    const json = await processMapFolder(omsiFileMap, mapDir, setProgress);
+    await applyData(json);
+  } catch (err) {
+    alert(err.message || String(err));
+    setProgress("");
+  }
+}
+
+pickOmsiBtn.addEventListener("click", async () => {
+  try {
+    await onOmsiFolderPicked(await pickOmsiFolder(setProgress));
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+});
+
+loadOmsiMapBtn.addEventListener("click", loadSelectedOmsiMap);
+
+omsiMapSelect.addEventListener("change", () => {
+  if (omsiMapSelect.value) loadSelectedOmsiMap();
+});
+
 mapSelect.addEventListener("change", async () => {
   const file = mapSelect.value;
   if (!file) return;
   try {
+    setProgress("Cargando demo…");
     await applyData(await loadMapFile(file));
+    setProgress("Mapa precargado (demo).");
   } catch (err) {
     alert(err.message);
   }
@@ -323,82 +392,10 @@ fileInput.addEventListener("change", async (ev) => {
     const text = await file.text();
     await applyData(JSON.parse(text));
     mapSelect.value = "";
-    localMapSelect.innerHTML = "";
+    setProgress("JSON cargado.");
   } catch {
     alert("JSON inválido");
   }
-});
-
-folderInput.addEventListener("change", async (ev) => {
-  const fileList = ev.target.files;
-  if (!fileList?.length) return;
-  try {
-    pendingFileMap = await loadFilesFromInput(fileList);
-    await afterFilesLoaded();
-  } catch (err) {
-    alert(err.message || String(err));
-  }
-});
-
-assetsInput.addEventListener("change", async (ev) => {
-  const fileList = ev.target.files;
-  if (!fileList?.length) return;
-  try {
-    const extra = await loadFilesFromInput(fileList);
-    pendingFileMap = pendingFileMap ? mergeFileMaps(pendingFileMap, extra) : extra;
-    await afterFilesLoaded(true);
-  } catch (err) {
-    alert(err.message || String(err));
-  }
-});
-
-async function afterFilesLoaded(reloadCurrent = false) {
-  const maps = listMapsInFiles(pendingFileMap);
-  if (!maps.length) {
-    alert("No se encontró global.cfg. Selecciona la carpeta del mapa (con tiles y TTData).");
-    return;
-  }
-  localMapSelect.innerHTML = maps
-    .map((m) => `<option value="${m}">${m.split("/").pop() || m}</option>`)
-    .join("");
-
-  const omsi = detectOmsiPrefix(pendingFileMap);
-  const hasSplines = [...pendingFileMap.keys()].some((k) => /splines\//i.test(k.replace(/\\/g, "/")));
-  const hasScenery = [...pendingFileMap.keys()].some((k) => /sceneryobjects\//i.test(k.replace(/\\/g, "/")));
-
-  if (!hasSplines && !hasScenery && !omsi) {
-    setProgress(
-      "Mapa cargado. Añade Splines + Sceneryobjects (botón de abajo) para ver todos los rieles.",
-    );
-  }
-
-  const current = localMapSelect.value;
-  if (reloadCurrent && current) {
-    await loadLocalMap(current);
-    return;
-  }
-  if (maps.length === 1) {
-    await loadLocalMap(maps[0]);
-  } else {
-    setProgress(`${maps.length} mapas detectados — elige uno y pulsa Cargar.`);
-  }
-}
-
-async function loadLocalMap(mapDir) {
-  if (!pendingFileMap) return;
-  try {
-    mapSelect.value = "";
-    const json = await processMapFolder(pendingFileMap, mapDir, setProgress);
-    await applyData(json);
-  } catch (err) {
-    alert(err.message || String(err));
-    setProgress("");
-  }
-}
-
-loadLocalMapBtn.addEventListener("click", () => {
-  const mapDir = localMapSelect.value;
-  if (mapDir) loadLocalMap(mapDir);
 });
 
 [showAllRails, showFreeOnly, showBusstops].forEach((el) => {
@@ -463,10 +460,4 @@ function buildLegend() {
 
 window.addEventListener("resize", resizeCanvas);
 buildLegend();
-loadManifest().then(async () => {
-  resizeCanvas();
-  if (mapSelect.options.length > 1) {
-    mapSelect.selectedIndex = 1;
-    mapSelect.dispatchEvent(new Event("change"));
-  }
-});
+loadManifest().then(() => resizeCanvas());

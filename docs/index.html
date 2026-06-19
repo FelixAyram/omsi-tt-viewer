@@ -17,23 +17,26 @@
     <div class="layout">
       <aside class="sidebar">
         <section class="panel">
-          <h2>Mapa</h2>
-          <select id="mapSelect" aria-label="Mapa precargado"></select>
-          <label class="file-upload">
-            <span>1. Carpeta del mapa (global.cfg + tiles)</span>
-            <input type="file" id="folderInput" webkitdirectory directory multiple />
-          </label>
-          <label class="file-upload secondary">
-            <span>2. Añadir Splines + Sceneryobjects de OMSI 2</span>
-            <input type="file" id="assetsInput" webkitdirectory directory multiple />
-          </label>
-          <p class="hint-small">Para ver <strong>todos</strong> los rieles (~264 en Test_Lat30) necesitas el mapa y las carpetas <code>Splines</code> y <code>Sceneryobjects</code> del juego. También puedes usar el mapa precargado del desplegable.</p>
-          <select id="localMapSelect" class="local-map-select" aria-label="Mapa local detectado"></select>
-          <button type="button" id="loadLocalMapBtn" class="btn-secondary">Cargar mapa seleccionado</button>
-          <label class="file-upload secondary">
-            <span>O subir JSON exportado</span>
-            <input type="file" id="fileInput" accept=".json,application/json" />
-          </label>
+          <h2>Instalación OMSI 2</h2>
+          <p id="omsiPathLabel" class="omsi-path muted">Sin carpeta seleccionada</p>
+          <button type="button" id="pickOmsiBtn" class="btn-primary">Elegir carpeta OMSI 2…</button>
+          <p class="hint-small">Carpeta nativa del juego (donde está <code>omsi.exe</code>): <code>maps/</code>, <code>Splines/</code>, <code>Sceneryobjects/</code>.</p>
+
+          <h2 class="panel-sub">Mapa</h2>
+          <select id="omsiMapSelect" disabled aria-label="Mapa OMSI">
+            <option value="">— Elige primero la carpeta OMSI 2 —</option>
+          </select>
+          <button type="button" id="loadOmsiMapBtn" class="btn-secondary" disabled>Cargar mapa</button>
+
+          <details class="demo-fallback">
+            <summary>Demo / JSON sin OMSI</summary>
+            <select id="mapSelect" aria-label="Mapa precargado"></select>
+            <label class="file-upload secondary">
+              <span>Subir JSON exportado</span>
+              <input type="file" id="fileInput" accept=".json,application/json" />
+            </label>
+          </details>
+
           <p id="progress" class="progress"></p>
           <p id="stats" class="stats"></p>
         </section>
