@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=14";
-import { readOmsiText } from "./omsi_text.js?v=14";
+} from "./omsi_browser.js?v=15";
+import { readOmsiText } from "./omsi_text.js?v=15";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,11 +15,15 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=14";
+} from "./geometry.js?v=15";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
 const CONNECT_TOL = 0.1;
+/** OMSI [path] direction: 0=adelante, 1=atrás, 2=doble (OmsiPathRules.cs). */
+const PATH_DIR_FORWARD = 0;
+const PATH_DIR_REVERSE = 1;
+const PATH_DIR_BOTH = 2;
 const MAP_GLOBAL_RE = /(?:^|\/)maps\/([^/]+)\/global\.cfg$/i;
 
 function normPath(path) {
@@ -246,6 +250,7 @@ function parseScoPaths(text) {
         gradStart: vals[6] ?? 0,
         gradEnd: vals[7] ?? 0,
         typ: vals.length > 8 ? (vals[8] | 0) : VEHICLE_TYP,
+        direction: vals.length > 10 ? (vals[10] | 0) : PATH_DIR_FORWARD,
       });
     }
     idx = j;
@@ -485,21 +490,54 @@ export async function listMapCatalog(fileMap) {
   return entries;
 }
 
+/** Inicio/fin de circulación según direction del [path] (como Unity TravelStartT). */
+export function getTrafficEndpoints(rail) {
+  const pts = rail.points;
+  if (!pts?.length) return { start: null, end: null };
+  const dir = rail.direction ?? PATH_DIR_FORWARD;
+  if (dir === PATH_DIR_REVERSE) {
+    return { start: pts[pts.length - 1], end: pts[0] };
+  }
+  return { start: pts[0], end: pts[pts.length - 1] };
+}
+
+/** Pares inicio→fin de circulación (doble sentido = dos sentidos). */
+function enumerateTrafficLegs(rail) {
+  const { start, end } = getTrafficEndpoints(rail);
+  if (!start || !end) return [];
+  const legs = [{ start, end }];
+  if (rail.direction === PATH_DIR_BOTH) {
+    legs.push({ start: end, end: start });
+  }
+  return legs;
+}
+
 function findFreeStarts(rails) {
   const free = new Set();
-  for (let i = 0; i < rails.length; i += 1) {
-    const sx = rails[i].points[0][0];
-    const sz = rails[i].points[0][2];
-    let incoming = false;
-    for (let j = 0; j < rails.length; j += 1) {
-      if (i === j) continue;
-      const end = rails[j].points.at(-1);
-      if (Math.hypot(end[0] - sx, end[2] - sz) <= CONNECT_TOL) {
-        incoming = true;
+  const ends = [];
+  for (const rail of rails) {
+    for (const leg of enumerateTrafficLegs(rail)) {
+      ends.push({ railId: rail.id, end: leg.end });
+    }
+  }
+
+  for (const rail of rails) {
+    for (const leg of enumerateTrafficLegs(rail)) {
+      const sx = leg.start[0];
+      const sz = leg.start[2];
+      let incoming = false;
+      for (const o of ends) {
+        if (o.railId === rail.id) continue;
+        if (Math.hypot(o.end[0] - sx, o.end[2] - sz) <= CONNECT_TOL) {
+          incoming = true;
+          break;
+        }
+      }
+      if (!incoming) {
+        free.add(rail.id);
         break;
       }
     }
-    if (!incoming) free.add(rails[i].id);
   }
   return free;
 }
@@ -725,7 +763,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
         pathIdx: String(pidx),
         typ: scoPath.typ,
         vehicle: scoPath.typ === VEHICLE_TYP,
-        direction: -1,
+        direction: scoPath.direction ?? PATH_DIR_FORWARD,
         tile: obj.tile,
         points,
         start: points[0],
@@ -738,7 +776,10 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   }
 
   const freeIds = findFreeStarts(rails);
-  for (const r of rails) r.freeStart = freeIds.has(r.id);
+  for (const r of rails) {
+    r.freeStart = freeIds.has(r.id);
+    r.trafficStart = getTrafficEndpoints(r).start;
+  }
 
   onProgress("Paradas…");
   const busstopOut = busstops.map((s) => {

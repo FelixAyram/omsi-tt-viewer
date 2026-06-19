@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=14";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=14";
+import { APP_VERSION } from "./version.js?v=15";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=15";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=14";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=14";
-import { distPointPolyline } from "./geometry.js?v=14";
+} from "./omsi_browser.js?v=15";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=15";
+import { distPointPolyline } from "./geometry.js?v=15";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=14";
+} from "./debug.js?v=15";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -278,6 +278,17 @@ function draw() {
 
     strokeRail(pts);
     ctx.shadowBlur = 0;
+
+    if (rail.freeStart && (showAll || freeOnly) && rail.trafficStart) {
+      const tp = worldToScreen(rail.trafficStart[0], rail.trafficStart[2]);
+      ctx.fillStyle = FREE_START.stroke;
+      ctx.strokeStyle = "#0d1118";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(tp.x, tp.y, Math.max(4, 3 * view.scale * 0.06), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
   }
 
   if (showBusstops.checked && data.busstops) {
@@ -327,7 +338,7 @@ function updateInfo(rail) {
     Longitud: ${rail.length} m<br/>
     Radio: ${radiusText}<br/>
     Tile: ${rail.tile || "—"}<br/>
-    Inicio libre: ${rail.freeStart ? "sí" : "no"}<br/>
+    Inicio libre: ${rail.freeStart ? "sí (punto verde)" : "no"}<br/>
     Vehículo: ${rail.vehicle ? "sí" : "no"}
   `;
 }
@@ -690,7 +701,7 @@ function buildLegend() {
   legendEl.innerHTML = Object.entries(RAIL_TYP)
     .map(([k, v]) => `<span><i style="background:${v.stroke}"></i>${v.label}</span>`)
     .join("");
-  legendEl.innerHTML += `<span><i style="background:${FREE_START.stroke}"></i>Inicio libre</span>`;
+  legendEl.innerHTML += `<span><i style="background:${FREE_START.stroke}"></i>Inicio libre (punto verde)</span>`;
   legendEl.innerHTML += `<span><i style="background:${BUSSTOP.fill}"></i>Busstop</span>`;
 }
 
