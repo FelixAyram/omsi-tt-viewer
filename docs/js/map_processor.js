@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=25";
-import { readOmsiText } from "./omsi_text.js?v=25";
+} from "./omsi_browser.js?v=26";
+import { readOmsiText } from "./omsi_text.js?v=26";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=25";
+} from "./geometry.js?v=26";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -792,12 +792,47 @@ export function findOmsiVehicleSpawnRails(rails, splines) {
   return spawn;
 }
 
-function busstopWorld(graph, stop, splines) {
+function parseAttachmentName(lines, startIdx) {
+  let name = "";
+  for (let j = startIdx; j < Math.min(startIdx + 16, lines.length); j += 1) {
+    const t = lines[j]?.trim();
+    if (!t || t.startsWith("[")) break;
+    if (/^-?\d+([.,]\d+)?([eE][+-]?\d+)?$/.test(t.replace(",", "."))) continue;
+    if (t.toLowerCase().endsWith(".sco")) continue;
+    name = t;
+  }
+  return name;
+}
+
+function resolveBusstopParentSpline(stop, splines, splineOrderByTile) {
+  const order = splineOrderByTile.get(stop.tile);
+  if (order && stop.splineListIndex >= 0 && stop.splineListIndex < order.length) {
+    const sid = order[stop.splineListIndex];
+    if (splines.has(sid)) return sid;
+  }
+  if (!order?.length) return "";
+  let bestId = "";
+  let bestScore = Infinity;
+  for (const sid of order) {
+    const sp = splines.get(sid);
+    if (!sp || sp.largo <= 0) continue;
+    if (stop.distAlong > sp.largo + 2) continue;
+    const score = Math.abs(stop.distAlong - Math.min(stop.distAlong, sp.largo));
+    if (score < bestScore) {
+      bestScore = score;
+      bestId = sid;
+    }
+  }
+  return bestId;
+}
+
+function busstopWorld(graph, stop, splines, splineOrderByTile) {
   const tile = parseTileCoords(stop.tile);
-  const origin = tile ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy) : { x: 0, z: 0 };
-  const sid = stop.parentSpline;
+  const tileOriginPt = tile ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy) : { x: 0, z: 0 };
+  const sid = resolveBusstopParentSpline(stop, splines, splineOrderByTile);
   const spline = sid ? splines.get(sid) : null;
   if (spline) {
+    const o = spline.origin || tileOriginPt;
     const local = splineLocalAt(
       spline.x,
       spline.y,
@@ -807,14 +842,15 @@ function busstopWorld(graph, stop, splines) {
       spline.z,
     );
     const dir = dirFromRotation(local.rot);
-    const off = perpOffset(dir, stop.lateral || 0);
+    const lat = spline.isMirrored ? -(stop.lateral || 0) : stop.lateral || 0;
+    const off = perpOffset(dir, lat);
     return {
-      x: origin.x + local.x + off.x,
-      y: local.z,
-      z: origin.z + local.y + off.z,
+      x: o.x + local.x + off.x,
+      y: local.z + (stop.heightOff || 0),
+      z: o.z + local.y + off.z,
     };
   }
-  return { x: origin.x + stop.x, y: stop.z, z: origin.z + stop.y };
+  return { x: tileOriginPt.x + stop.x, y: stop.z + (stop.heightOff || 0), z: tileOriginPt.z + stop.y };
 }
 
 /**
@@ -845,6 +881,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   const splines = new Map();
   const objects = new Map();
   const busstops = [];
+  const splineOrderByTile = new Map();
   const sliCache = new Map();
   const scoCache = new Map();
   let sliFound = 0;
@@ -859,6 +896,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     const lines = text.split(/\r?\n/);
     const coords = parseTileCoords(tileName);
     const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
+    const splineOrder = [];
 
     for (let idx = 0; idx < lines.length; idx += 1) {
       const tag = lines[idx].trim();
@@ -885,29 +923,17 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
         const rel = lines[idx + 2]?.trim() ?? "";
         const oid = lines[idx + 3]?.trim() ?? "";
         if (oid && rel.toLowerCase().includes("bus_stop")) {
-          let name = "";
-          let parentSpline = "";
-          for (let j = idx + 9; j < Math.min(idx + 22, lines.length); j += 1) {
-            const t = lines[j]?.trim();
-            if (!t || t.startsWith("[")) break;
-            if (/^-?\d+(\.\d+)?$/.test(t)) {
-              if (name && !parentSpline) parentSpline = t;
-              continue;
-            }
-            if (t && !t.toLowerCase().endsWith(".sco")) name = t;
-          }
+          const splineListIndex = parseInt(lines[idx + 4]?.trim() ?? "0", 10) || 0;
+          const name = parseAttachmentName(lines, idx + 9);
           busstops.push({
             id: oid,
             name: name || `Parada ${oid}`,
             tile: tileName,
-            x: safeFloat(lines[idx + 5]),
-            y: safeFloat(lines[idx + 6]),
-            z: safeFloat(lines[idx + 7]),
-            rotation: safeFloat(lines[idx + 8]),
-            pathIdx: lines[idx + 4]?.trim() ?? "0",
-            parentSpline,
-            distAlong: safeFloat(lines[idx + 7]),
+            splineListIndex,
             lateral: safeFloat(lines[idx + 5]),
+            heightOff: safeFloat(lines[idx + 6]),
+            distAlong: safeFloat(lines[idx + 7]),
+            rotation: safeFloat(lines[idx + 8]),
           });
         }
         idx += 1;
@@ -917,6 +943,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
       if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
         const block = parseSplineBlock(lines, idx + 1);
         if (block) {
+          splineOrder.push(block.id);
           splines.set(block.id, {
             ...block,
             tile: tileName,
@@ -927,6 +954,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
         }
       }
     }
+    splineOrderByTile.set(tileName, splineOrder);
   }
 
   onProgress("Cargando paths .sli…");
@@ -1057,7 +1085,8 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
 
   onProgress("Paradas…");
   const busstopOut = busstops.map((s) => {
-    const w = busstopWorld({ minTx, minTy }, s, splines);
+    const parentSpline = resolveBusstopParentSpline(s, splines, splineOrderByTile);
+    const w = busstopWorld({ minTx, minTy }, s, splines, splineOrderByTile);
     expandBounds(bounds, w.x, w.z);
     return {
       id: s.id,
@@ -1066,8 +1095,10 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
       y: w.y,
       z: w.z,
       rotation: s.rotation,
-      pathIdx: s.pathIdx,
-      parentSpline: s.parentSpline,
+      splineListIndex: s.splineListIndex,
+      parentSpline,
+      distAlong: s.distAlong,
+      lateral: s.lateral,
     };
   });
 
