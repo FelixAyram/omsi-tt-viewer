@@ -104,6 +104,10 @@ select:disabled {
   cursor: pointer;
 }
 
+.btn-spaced {
+  margin-top: 6px;
+}
+
 .panel-sub {
   font-size: 0.82rem;
   text-transform: uppercase;

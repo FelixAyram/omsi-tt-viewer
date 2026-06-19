@@ -53,6 +53,19 @@ function parseGlobalName(text) {
   return m ? m[1].trim() : "";
 }
 
+async function getFileHandleInsensitive(dirHandle, baseName) {
+  try {
+    return await dirHandle.getFileHandle(baseName);
+  } catch {
+    for await (const [name, handle] of dirHandle.entries()) {
+      if (handle.kind === "file" && name.toLowerCase() === baseName.toLowerCase()) {
+        return handle;
+      }
+    }
+    throw new Error(`No se encontró ${baseName}`);
+  }
+}
+
 async function getDirHandle(rootHandle, relPath) {
   let cur = rootHandle;
   for (const part of relPath.replace(/\\/g, "/").split("/").filter(Boolean)) {
@@ -114,7 +127,7 @@ export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
   for await (const [folderName, child] of mapsDir.entries()) {
     if (child.kind !== "directory" || folderName.startsWith("_")) continue;
     try {
-      const gf = await child.getFileHandle("global.cfg");
+      const gf = await getFileHandleInsensitive(child, "global.cfg");
       const file = await gf.getFile();
       const cfgName = parseGlobalName(await file.text());
       let label = folderName;
@@ -133,12 +146,18 @@ export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
 }
 
 // Carga carpeta del mapa + .sli y .sco referenciados bajo demanda.
-export async function buildMapFileMapLazy(rootHandle, mapRelDir, collectAssetRefs, onProgress = null) {
+export async function buildMapFileMapLazy(
+  rootHandle,
+  mapRelDir,
+  collectAssetRefs,
+  onProgress = null,
+  mapHandleOverride = null,
+) {
   const mapDir = mapRelDir.replace(/\\/g, "/");
   const fileMap = new Map();
 
   onProgress?.("Cargando tiles y TTData del mapa…");
-  const mapHandle = await getDirHandle(rootHandle, mapDir);
+  const mapHandle = mapHandleOverride ?? (await getDirHandle(rootHandle, mapDir));
   await walkDirectoryToMap(mapHandle, mapDir, fileMap);
 
   onProgress?.("Analizando .map → referencias .sli / .sco…");
@@ -170,6 +189,193 @@ export async function pickOmsiRoot(onProgress = null) {
       });
       onProgress?.("Validando instalación OMSI 2…");
       await validateOmsiRootHandle(handle);
+      return { mode: "fsa", label: handle.name, rootHandle: handle };
+    } catch (err) {
+      if (err?.name === "AbortError") return null;
+      throw err;
+    }
+  }
+  return pickOmsiRootWebkit(onProgress);
+}
+
+// Valida carpeta de un mapa (global.cfg + tiles).
+export async function validateMapFolderHandle(mapHandle) {
+  await getFileHandleInsensitive(mapHandle, "global.cfg");
+  let hasTile = false;
+  for await (const [name, handle] of mapHandle.entries()) {
+    if (handle.kind === "file" && /tile_-?\d+_-?\d+\.map$/i.test(name)) {
+      hasTile = true;
+      break;
+    }
+  }
+  if (!hasTile) {
+    throw new Error("La carpeta no contiene tiles tile_*.map. Elige la carpeta del mapa (ej. maps/Test_Lat30).");
+  }
+  const folder = mapHandle.name;
+  let label = folder;
+  try {
+    const gf = await getFileHandleInsensitive(mapHandle, "global.cfg");
+    const cfgName = parseGlobalName(await (await gf.getFile()).text());
+    if (cfgName && cfgName.toLowerCase() !== folder.toLowerCase()) {
+      label = `${folder} — ${cfgName}`;
+    }
+  } catch {
+    // usar nombre de carpeta
+  }
+  return { mapDir: `maps/${folder}`, folder, label };
+}
+
+export function inspectMapFolderWebkit(fileMap) {
+  const keys = [...fileMap.keys()].map(normPath);
+  const globalKey = keys.find((k) => /(?:^|\/)global\.cfg$/i.test(k));
+  if (!globalKey) {
+    throw new Error("No hay global.cfg. Elige la carpeta del mapa (ej. …/maps/Test_Lat30).");
+  }
+  const hasTile = keys.some((k) => /tile_-?\d+_-?\d+\.map$/i.test(k));
+  if (!hasTile) {
+    throw new Error("No hay tiles tile_*.map en la carpeta elegida.");
+  }
+
+  let folder;
+  let flatPaths = false;
+  const nested = /(?:^|\/)maps\/([^/]+)\/global\.cfg$/i.exec(globalKey);
+  if (nested) {
+    folder = nested[1];
+  } else {
+    const parts = globalKey.split("/");
+    if (parts.length === 1) {
+      flatPaths = true;
+      folder = "Mapa";
+    } else {
+      folder = parts[parts.length - 2];
+    }
+  }
+
+  return { mapDir: `maps/${folder}`, folder, flatPaths, globalKey };
+}
+
+export function normalizeMapFileKeys(fileMap, mapDir) {
+  const folder = mapDir.split("/").pop() || "Mapa";
+  const out = new Map();
+  for (const [k, f] of fileMap) {
+    const n = normPath(k);
+    if (!n.includes("/")) {
+      out.set(`maps/${folder}/${n}`, f);
+    } else if (/^maps\//i.test(n)) {
+      out.set(n, f);
+    } else {
+      out.set(`maps/${folder}/${n}`, f);
+    }
+  }
+  return out;
+}
+
+export async function pickMapFolder(onProgress = null) {
+  if (typeof window.showDirectoryPicker === "function") {
+    try {
+      const handle = await window.showDirectoryPicker({
+        id: "omsi2-map-folder",
+        mode: "read",
+      });
+      onProgress?.("Validando carpeta del mapa…");
+      const info = await validateMapFolderHandle(handle);
+      return { mode: "fsa-map", mapHandle: handle, ...info };
+    } catch (err) {
+      if (err?.name === "AbortError") return null;
+      throw err;
+    }
+  }
+  return pickMapFolderWebkit(onProgress);
+}
+
+function pickMapFolderWebkit(onProgress = null) {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.webkitdirectory = true;
+    input.multiple = true;
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", async () => {
+      const files = input.files;
+      document.body.removeChild(input);
+      if (!files?.length) {
+        resolve(null);
+        return;
+      }
+      onProgress?.("Validando carpeta del mapa…");
+      const fileMap = new Map();
+      for (const f of files) {
+        const rel = normPath(f.webkitRelativePath || f.name);
+        if (rel) fileMap.set(rel, f);
+      }
+      try {
+        const info = inspectMapFolderWebkit(fileMap);
+        let folder = info.folder;
+        let label = folder;
+        const gfKey = [...fileMap.keys()].find((k) => /global\.cfg$/i.test(normPath(k)));
+        if (gfKey) {
+          const gfParts = normPath(gfKey).split("/");
+          if (info.flatPaths && gfParts.length > 1) {
+            folder = gfParts[gfParts.length - 2];
+          }
+          try {
+            const cfgName = parseGlobalName(await fileMap.get(gfKey).text());
+            if (cfgName) {
+              label = folder && folder !== "Mapa" ? `${folder} — ${cfgName}` : cfgName;
+              if (info.flatPaths && folder === "Mapa") folder = cfgName.slice(0, 48) || folder;
+            }
+          } catch {
+            // ignorar
+          }
+        }
+        const mapDir = `maps/${folder}`;
+        resolve({
+          mode: "webkit-map",
+          fileMap: normalizeMapFileKeys(fileMap, mapDir),
+          mapDir,
+          folder,
+          flatPaths: info.flatPaths,
+          label,
+        });
+      } catch (err) {
+        alert(err.message || String(err));
+        resolve(null);
+      }
+    });
+    input.click();
+  });
+}
+
+// Solo Splines/ y Sceneryobjects/ (para combinar con carpeta de mapa).
+export async function validateOmsiAssetsRootHandle(rootHandle) {
+  const required = [
+    ["Splines", "splines"],
+    ["Sceneryobjects", "sceneryobjects"],
+  ];
+  const missing = [];
+  for (const names of required) {
+    const handle = await getChildDirHandle(rootHandle, ...names);
+    if (!handle) missing.push(`${names[0]}/`);
+  }
+  if (missing.length) {
+    throw new Error(
+      "Falta: " +
+        missing.join(", ") +
+        ". Elige la carpeta raíz de OMSI 2 (donde está omsi.exe).",
+    );
+  }
+}
+
+export async function pickOmsiAssetsRoot(onProgress = null) {
+  if (typeof window.showDirectoryPicker === "function") {
+    try {
+      const handle = await window.showDirectoryPicker({
+        id: "omsi2-assets-root",
+        mode: "read",
+      });
+      onProgress?.("Validando Splines y Sceneryobjects…");
+      await validateOmsiAssetsRootHandle(handle);
       return { mode: "fsa", label: handle.name, rootHandle: handle };
     } catch (err) {
       if (err?.name === "AbortError") return null;
@@ -233,6 +439,34 @@ export async function buildMapFileMapWebkit(fullFileMap, mapDir, collectAssetRef
       const kl = k.replace(/\\/g, "/").toLowerCase();
       if (kl === rl || kl.endsWith(`/${rl}`)) {
         mapFiles.set(k.replace(/\\/g, "/"), f);
+        break;
+      }
+    }
+  }
+
+  return mapFiles;
+}
+
+// Mapa en carpeta aparte + assets desde instalación OMSI (webkit).
+export async function buildMapFileMapWebkitCombined(
+  mapFileMap,
+  assetFileMap,
+  mapDir,
+  collectAssetRefs,
+  onProgress = null,
+) {
+  const mapFiles = new Map(mapFileMap);
+  onProgress?.("Analizando .map → referencias .sli / .sco…");
+  const { sliPaths, scoPaths } = await collectAssetRefs(mapFiles, mapDir);
+  const needed = [...sliPaths, ...scoPaths];
+
+  onProgress?.(`Buscando ${needed.length} assets en OMSI 2…`);
+  for (const rel of needed) {
+    const rl = normPath(rel).toLowerCase();
+    for (const [k, f] of assetFileMap) {
+      const kl = normPath(k).toLowerCase();
+      if (kl === rl || kl.endsWith(`/${rl}`)) {
+        mapFiles.set(normPath(k), f);
         break;
       }
     }

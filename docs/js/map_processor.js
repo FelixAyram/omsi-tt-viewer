@@ -4,7 +4,8 @@
 import {
   buildMapFileMapLazy,
   buildMapFileMapWebkit,
-} from "./omsi_browser.js?v=5";
+  buildMapFileMapWebkitCombined,
+} from "./omsi_browser.js?v=6";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -12,7 +13,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=5";
+} from "./geometry.js?v=6";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -822,6 +823,22 @@ export async function loadMapLazy(omsiRoot, mapDir, onProgress = () => {}) {
   if (omsiRoot.mode === "fsa") {
     fileMap = await buildMapFileMapLazy(
       omsiRoot.rootHandle,
+      mapDir,
+      collectAssetRefsFromMapFiles,
+      onProgress,
+    );
+  } else if (omsiRoot.mode === "fsa-combined") {
+    fileMap = await buildMapFileMapLazy(
+      omsiRoot.rootHandle,
+      mapDir,
+      collectAssetRefsFromMapFiles,
+      onProgress,
+      omsiRoot.mapHandle,
+    );
+  } else if (omsiRoot.mode === "webkit-combined") {
+    fileMap = await buildMapFileMapWebkitCombined(
+      omsiRoot.mapFileMap,
+      omsiRoot.assetFileMap,
       mapDir,
       collectAssetRefsFromMapFiles,
       onProgress,

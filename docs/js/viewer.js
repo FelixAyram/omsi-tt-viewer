@@ -1,13 +1,19 @@
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=5";
-import { pickOmsiRoot, scanMapsCatalogFromHandle } from "./omsi_browser.js?v=5";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=5";
-import { distPointPolyline } from "./geometry.js?v=5";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=6";
+import {
+  pickOmsiRoot,
+  pickMapFolder,
+  pickOmsiAssetsRoot,
+  scanMapsCatalogFromHandle,
+} from "./omsi_browser.js?v=6";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=6";
+import { distPointPolyline } from "./geometry.js?v=6";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
 const mapSelect = document.getElementById("mapSelect");
 const omsiPathLabel = document.getElementById("omsiPathLabel");
 const pickOmsiBtn = document.getElementById("pickOmsiBtn");
+const pickMapFolderBtn = document.getElementById("pickMapFolderBtn");
 const omsiMapSelect = document.getElementById("omsiMapSelect");
 const loadOmsiMapBtn = document.getElementById("loadOmsiMapBtn");
 const routeList = document.getElementById("routeList");
@@ -316,9 +322,66 @@ async function populateOmsiMapSelect(catalog) {
   setProgress(`${catalog.length} mapas en maps/ — elige uno para cargar tiles y assets.`);
 }
 
+function combineMapAndAssetRoots(mapPick, assetPick) {
+  if (mapPick.mode === "fsa-map" && assetPick.mode === "fsa") {
+    return {
+      mode: "fsa-combined",
+      rootHandle: assetPick.rootHandle,
+      mapHandle: mapPick.mapHandle,
+      mapDir: mapPick.mapDir,
+      label: `${mapPick.label} · ${assetPick.label}`,
+    };
+  }
+  if (mapPick.mode === "webkit-map" && assetPick.mode === "webkit") {
+    return {
+      mode: "webkit-combined",
+      mapFileMap: mapPick.fileMap,
+      assetFileMap: assetPick.fileMap,
+      mapDir: mapPick.mapDir,
+      label: `${mapPick.label} · ${assetPick.label}`,
+    };
+  }
+  throw new Error("Usa Chrome o Edge para elegir carpetas con este flujo.");
+}
+
+async function onMapFolderPicked(mapPick) {
+  if (!mapPick) return;
+  pickOmsiBtn.disabled = true;
+  pickMapFolderBtn.disabled = true;
+  try {
+    setProgress("Ahora elige la carpeta OMSI 2 (omsi.exe) para Splines y Sceneryobjects…");
+    const assetPick = await pickOmsiAssetsRoot(setProgress);
+    if (!assetPick) {
+      setProgress("");
+      return;
+    }
+
+    omsiRoot = combineMapAndAssetRoots(mapPick, assetPick);
+    omsiRootLabel = omsiRoot.label;
+    omsiPathLabel.textContent = omsiRootLabel;
+    omsiPathLabel.classList.remove("muted");
+
+    await populateOmsiMapSelect([
+      { dir: mapPick.mapDir, folder: mapPick.folder, label: mapPick.label },
+    ]);
+    omsiMapSelect.value = mapPick.mapDir;
+    await loadSelectedOmsiMap();
+  } catch (err) {
+    omsiRoot = null;
+    omsiPathLabel.textContent = "Sin carpeta seleccionada";
+    omsiPathLabel.classList.add("muted");
+    alert(err.message || String(err));
+    setProgress("");
+  } finally {
+    pickOmsiBtn.disabled = false;
+    pickMapFolderBtn.disabled = false;
+  }
+}
+
 async function onOmsiFolderPicked(result) {
   if (!result) return;
   pickOmsiBtn.disabled = true;
+  pickMapFolderBtn.disabled = true;
   setProgress("Conectando con OMSI 2…");
   try {
     omsiRoot = result;
@@ -346,6 +409,7 @@ async function onOmsiFolderPicked(result) {
     setProgress("");
   } finally {
     pickOmsiBtn.disabled = false;
+    pickMapFolderBtn.disabled = false;
   }
 }
 
@@ -366,6 +430,14 @@ async function loadSelectedOmsiMap() {
 pickOmsiBtn.addEventListener("click", async () => {
   try {
     await onOmsiFolderPicked(await pickOmsiRoot(setProgress));
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+});
+
+pickMapFolderBtn.addEventListener("click", async () => {
+  try {
+    await onMapFolderPicked(await pickMapFolder(setProgress));
   } catch (err) {
     alert(err.message || String(err));
   }

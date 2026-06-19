@@ -20,7 +20,9 @@
           <h2>Instalación OMSI 2</h2>
           <p id="omsiPathLabel" class="omsi-path muted">Sin carpeta seleccionada</p>
           <button type="button" id="pickOmsiBtn" class="btn-primary">Elegir carpeta OMSI 2…</button>
-          <p class="hint-small">Solo se listan mapas de <code>maps/</code>. Al elegir uno se cargan sus <code>.map</code>, TTData y los <code>.sli</code> / <code>.sco</code> que referencian.</p>
+          <button type="button" id="pickMapFolderBtn" class="btn-secondary btn-spaced">Elegir carpeta de mapa…</button>
+          <p class="hint-small">Opción A: carpeta OMSI 2 (<code>omsi.exe</code>) y luego un mapa del listado.</p>
+          <p class="hint-small">Opción B: carpeta del mapa directamente (ej. <code>…/maps/Test_Lat30</code>); después pediremos OMSI 2 solo para splines y objetos.</p>
 
           <h2 class="panel-sub">Mapa</h2>
           <select id="omsiMapSelect" disabled aria-label="Mapa OMSI">
@@ -72,6 +74,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/viewer.js?v=5"></script>
+  <script type="module" src="js/viewer.js?v=6"></script>
 </body>
 </html>
