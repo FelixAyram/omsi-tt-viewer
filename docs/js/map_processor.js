@@ -1,7 +1,10 @@
 /**
  * Procesa carpetas OMSI 2 en el navegador (global.cfg + tiles + TTData).
- * Requiere que la selección incluya Splines/ y Sceneryobjects/ (carpeta OMSI 2 o mapa dentro de ella).
  */
+import {
+  buildMapFileMapLazy,
+  buildMapFileMapWebkit,
+} from "./omsi_browser.js";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -45,6 +48,40 @@ function parseGlobalName(text) {
 
 function isSplinePath(line) {
   return /\.sli$/i.test(line) && /Splines/i.test(line);
+}
+
+/** Tras cargar tiles del mapa, detecta .sli y .sco referenciados. */
+export async function collectAssetRefsFromMapFiles(fileMap, mapDir) {
+  const sliPaths = new Set();
+  const scoPaths = new Set();
+  const prefix = mapDir.replace(/\\/g, "/");
+  const pfx = prefix.endsWith("/") ? prefix : `${prefix}/`;
+
+  for (const [path, file] of fileMap) {
+    const n = path.replace(/\\/g, "/");
+    if (!n.startsWith(pfx)) continue;
+    if (!/tile_-?\d+_-?\d+\.map$/i.test(n)) continue;
+
+    const text = await readText(file);
+    const lines = text.split(/\r?\n/);
+    for (let idx = 0; idx < lines.length; idx += 1) {
+      const tag = lines[idx].trim();
+      if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
+        const sliPath = lines[idx + 2]?.trim() ?? "";
+        if (isSplinePath(sliPath)) sliPaths.add(sliPath.replace(/\\/g, "/"));
+      }
+      if (tag === "[object]" && lines[idx + 1]?.trim() === "0") {
+        const sco = lines[idx + 2]?.trim() ?? "";
+        if (sco.toLowerCase().endsWith(".sco")) scoPaths.add(sco.replace(/\\/g, "/"));
+      }
+      if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
+        const rel = lines[idx + 2]?.trim() ?? "";
+        if (rel.toLowerCase().includes("bus_stop")) scoPaths.add(rel.replace(/\\/g, "/"));
+      }
+    }
+  }
+
+  return { sliPaths, scoPaths };
 }
 
 function parseSplineBlock(lines, i) {
@@ -732,6 +769,27 @@ export async function loadFilesFromInput(fileList) {
     if (rel) map.set(rel, f);
   }
   return map;
+}
+
+/** Carga lazy: tiles del mapa → refs en .map → .sli/.sco → procesar. */
+export async function loadMapLazy(omsiRoot, mapDir, onProgress = () => {}) {
+  let fileMap;
+  if (omsiRoot.mode === "fsa") {
+    fileMap = await buildMapFileMapLazy(
+      omsiRoot.rootHandle,
+      mapDir,
+      collectAssetRefsFromMapFiles,
+      onProgress,
+    );
+  } else {
+    fileMap = await buildMapFileMapWebkit(
+      omsiRoot.fileMap,
+      mapDir,
+      collectAssetRefsFromMapFiles,
+      onProgress,
+    );
+  }
+  return processMapFolder(fileMap, mapDir, onProgress);
 }
 
 export function listMapsInFiles(fileMap) {

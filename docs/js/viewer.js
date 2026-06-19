@@ -1,7 +1,7 @@
 import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js";
 import { distPointPolyline } from "./geometry.js";
-import { processMapFolder, validateOmsiInstall, listMapCatalog } from "./map_processor.js";
-import { pickOmsiFolder } from "./omsi_browser.js";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js";
+import { pickOmsiRoot, scanMapsCatalogFromHandle } from "./omsi_browser.js";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
@@ -27,7 +27,7 @@ let dragging = false;
 let lastPointer = { x: 0, y: 0 };
 let selectedRailId = null;
 let selectedRoutes = new Set();
-let omsiFileMap = null;
+let omsiRoot = null;
 let omsiRootLabel = "";
 
 function railPoints(rail) {
@@ -301,12 +301,9 @@ function setProgress(msg) {
   progressEl.textContent = msg;
 }
 
-async function populateOmsiMapSelect() {
+async function populateOmsiMapSelect(catalog) {
   omsiMapSelect.disabled = true;
   loadOmsiMapBtn.disabled = true;
-  omsiMapSelect.innerHTML = '<option value="">Indexando mapas…</option>';
-
-  const catalog = await listMapCatalog(omsiFileMap);
   omsiMapSelect.innerHTML = `<option value="">— ${catalog.length} mapas —</option>`;
   for (const entry of catalog) {
     const opt = document.createElement("option");
@@ -316,23 +313,30 @@ async function populateOmsiMapSelect() {
   }
   omsiMapSelect.disabled = false;
   loadOmsiMapBtn.disabled = false;
-  setProgress(`${catalog.length} mapas en maps/ — elige uno y pulsa Cargar.`);
+  setProgress(`${catalog.length} mapas en maps/ — elige uno para cargar tiles y assets.`);
 }
 
 async function onOmsiFolderPicked(result) {
   if (!result) return;
   pickOmsiBtn.disabled = true;
-  setProgress("Leyendo instalación OMSI 2…");
+  setProgress("Conectando con OMSI 2…");
   try {
-    omsiFileMap = result.fileMap;
+    omsiRoot = result;
     omsiRootLabel = result.label;
-    const count = validateOmsiInstall(omsiFileMap);
     omsiPathLabel.textContent = omsiRootLabel;
     omsiPathLabel.classList.remove("muted");
-    await populateOmsiMapSelect();
-    setProgress(`${count} mapas listos en ${omsiRootLabel}.`);
+
+    let catalog;
+    if (result.mode === "fsa") {
+      catalog = await scanMapsCatalogFromHandle(result.rootHandle, setProgress);
+    } else {
+      validateOmsiInstall(result.fileMap);
+      catalog = await listMapCatalog(result.fileMap);
+    }
+
+    await populateOmsiMapSelect(catalog);
   } catch (err) {
-    omsiFileMap = null;
+    omsiRoot = null;
     omsiPathLabel.textContent = "Sin carpeta seleccionada";
     omsiPathLabel.classList.add("muted");
     omsiMapSelect.innerHTML = '<option value="">— Elige primero la carpeta OMSI 2 —</option>';
@@ -347,11 +351,11 @@ async function onOmsiFolderPicked(result) {
 
 async function loadSelectedOmsiMap() {
   const mapDir = omsiMapSelect.value;
-  if (!mapDir || !omsiFileMap) return;
+  if (!mapDir || !omsiRoot) return;
   try {
     mapSelect.value = "";
     setProgress(`Cargando ${mapDir.split("/").pop()}…`);
-    const json = await processMapFolder(omsiFileMap, mapDir, setProgress);
+    const json = await loadMapLazy(omsiRoot, mapDir, setProgress);
     await applyData(json);
   } catch (err) {
     alert(err.message || String(err));
@@ -361,7 +365,7 @@ async function loadSelectedOmsiMap() {
 
 pickOmsiBtn.addEventListener("click", async () => {
   try {
-    await onOmsiFolderPicked(await pickOmsiFolder(setProgress));
+    await onOmsiFolderPicked(await pickOmsiRoot(setProgress));
   } catch (err) {
     alert(err.message || String(err));
   }
