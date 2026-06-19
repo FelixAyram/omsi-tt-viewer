@@ -1,7 +1,7 @@
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=4";
-import { pickOmsiRoot, scanMapsCatalogFromHandle } from "./omsi_browser.js?v=4";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=4";
-import { distPointPolyline } from "./geometry.js?v=4";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=5";
+import { pickOmsiRoot, scanMapsCatalogFromHandle } from "./omsi_browser.js?v=5";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=5";
+import { distPointPolyline } from "./geometry.js?v=5";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");

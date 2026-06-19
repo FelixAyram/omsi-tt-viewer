@@ -4,7 +4,7 @@
 import {
   buildMapFileMapLazy,
   buildMapFileMapWebkit,
-} from "./omsi_browser.js?v=4";
+} from "./omsi_browser.js?v=5";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -12,11 +12,59 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=4";
+} from "./geometry.js?v=5";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
 const CONNECT_TOL = 0.1;
+const MAP_GLOBAL_RE = /(?:^|\/)maps\/([^/]+)\/global\.cfg$/i;
+
+function normPath(path) {
+  return path.replace(/\\/g, "/");
+}
+
+function detectOmsiPrefix(files) {
+  for (const p of files.keys()) {
+    const lower = normPath(p).toLowerCase();
+    for (const marker of ["maps/", "splines/", "sceneryobjects/"]) {
+      const i = lower.indexOf(marker);
+      if (i >= 0) return normPath(p).slice(0, i);
+    }
+  }
+  return "";
+}
+
+function canonicalMapDirFromPath(path) {
+  const m = MAP_GLOBAL_RE.exec(normPath(path));
+  if (!m || m[1].startsWith("_")) return null;
+  return `maps/${m[1]}`;
+}
+
+function resolveMapPrefixInFileMap(fileMap, mapDir) {
+  const dir = normPath(mapDir).replace(/\/$/, "");
+  const dirLower = dir.toLowerCase();
+  const folder = dir.split("/").pop() || dir;
+
+  for (const k of fileMap.keys()) {
+    const n = normPath(k);
+    const nl = n.toLowerCase();
+    if (nl === `${dirLower}/global.cfg` || nl.endsWith(`/${dirLower}/global.cfg`)) {
+      return n.slice(0, n.length - "global.cfg".length);
+    }
+  }
+
+  const re = new RegExp(`(^|/)maps/${folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`, "i");
+  for (const k of fileMap.keys()) {
+    const n = normPath(k);
+    const m = re.exec(n);
+    if (m) {
+      const start = m.index + (m[1] === "/" ? 1 : 0);
+      return n.slice(0, start + `maps/${folder}/`.length);
+    }
+  }
+
+  return dir.endsWith("/") ? dir : `${dir}/`;
+}
 
 function safeFloat(text, fallback = 0) {
   const v = String(text ?? "").trim().replace(",", ".");
@@ -301,30 +349,39 @@ function resolveFile(index, relPath, omsiPrefix = "") {
   return best;
 }
 
-function resolveMapContext(files, mapDir) {
-  const base = mapDir.replace(/\\/g, "/").replace(/\/$/, "");
-  const shortName = base.split("/").pop() || base;
-  const prefixCandidates = [
-    `${base}/`,
-    base ? `${base}/` : "",
-    `${shortName}/`,
-    "",
-  ];
 
-  for (const prefix of prefixCandidates) {
-    const globalKey = [...files.keys()].find((k) => {
-      const n = k.replace(/\\/g, "/");
-      if (prefix && !n.startsWith(prefix)) return false;
-      return n.endsWith("global.cfg") || n === `${prefix}global.cfg`.replace(/\/$/, "/global.cfg");
+function resolveMapContext(files, mapDir) {
+  const prefix = resolveMapPrefixInFileMap(files, mapDir);
+  const globalKey = [...files.keys()].find((k) => {
+    const n = normPath(k);
+    return n.startsWith(prefix) && n.endsWith("global.cfg");
+  });
+  const tileCount = [...files.keys()].filter((k) => {
+    const n = normPath(k);
+    return n.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+  }).length;
+  if (globalKey && tileCount > 0) {
+    return { prefix, globalKey, globalFile: files.get(globalKey) };
+  }
+
+  const base = normPath(mapDir).replace(/\/$/, "");
+  const shortName = base.split("/").pop() || base;
+  const prefixCandidates = [`${base}/`, `${shortName}/`, ""];
+
+  for (const candidate of prefixCandidates) {
+    const gKey = [...files.keys()].find((k) => {
+      const n = normPath(k);
+      if (candidate && !n.startsWith(candidate)) return false;
+      return n.endsWith("global.cfg");
     });
-    const tileCount = [...files.keys()].filter((k) => {
-      const n = k.replace(/\\/g, "/");
-      return (prefix ? n.startsWith(prefix) : true) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+    const tiles = [...files.keys()].filter((k) => {
+      const n = normPath(k);
+      return (candidate ? n.startsWith(candidate) : true) && /tile_-?\d+_-?\d+\.map$/i.test(n);
     }).length;
-    if (globalKey && tileCount > 0) {
-      const globalNorm = globalKey.replace(/\\/g, "/");
+    if (gKey && tiles > 0) {
+      const globalNorm = normPath(gKey);
       const resolvedPrefix = globalNorm.slice(0, globalNorm.lastIndexOf("global.cfg"));
-      return { prefix: resolvedPrefix, globalKey, globalFile: files.get(globalKey) };
+      return { prefix: resolvedPrefix, globalKey: gKey, globalFile: files.get(gKey) };
     }
   }
 
@@ -334,12 +391,8 @@ function resolveMapContext(files, mapDir) {
 function findMaps(files) {
   const maps = new Set();
   for (const path of files.keys()) {
-    const n = path.replace(/\\/g, "/");
-    const m = /\/maps\/([^/]+)\/global\.cfg$/i.exec(n);
-    if (!m) continue;
-    const mapName = m[1];
-    if (mapName.startsWith("_")) continue;
-    maps.add(n.replace(/\/global\.cfg$/i, ""));
+    const canon = canonicalMapDirFromPath(path);
+    if (canon) maps.add(canon);
   }
   return [...maps].sort((a, b) => {
     const na = a.split("/").pop().toLowerCase();
@@ -349,9 +402,10 @@ function findMaps(files) {
 }
 
 function findGlobalFile(fileMap, mapDir) {
-  const target = `${mapDir.replace(/\\/g, "/")}/global.cfg`.toLowerCase();
+  const target = `${normPath(mapDir).replace(/\/$/, "")}/global.cfg`.toLowerCase();
   for (const [k, f] of fileMap) {
-    if (k.replace(/\\/g, "/").toLowerCase() === target) return f;
+    const kn = normPath(k).toLowerCase();
+    if (kn === target || kn.endsWith(`/${target}`)) return f;
   }
   return null;
 }
@@ -398,15 +452,6 @@ export async function listMapCatalog(fileMap) {
     entries.push({ dir, folder, label });
   }
   return entries;
-}
-
-function detectOmsiPrefix(files) {
-  for (const p of files.keys()) {
-    const n = p.replace(/\\/g, "/");
-    if (n.includes("Sceneryobjects/")) return n.split("Sceneryobjects/")[0];
-    if (n.includes("Splines/")) return n.split("Splines/")[0];
-  }
-  return "";
 }
 
 function findFreeStarts(rails) {
