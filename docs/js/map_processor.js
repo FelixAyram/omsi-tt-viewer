@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=26";
-import { readOmsiText } from "./omsi_text.js?v=26";
+} from "./omsi_browser.js?v=27";
+import { readOmsiText } from "./omsi_text.js?v=27";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=26";
+} from "./geometry.js?v=27";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -140,7 +140,7 @@ export async function collectAssetRefsFromMapFiles(fileMap, mapDir) {
   return { sliPaths, scoPaths };
 }
 
-function parseSplineBlock(lines, i) {
+function parseSplineBlock(lines, i, isSplineH = false) {
   if (lines[i]?.trim() !== "0") return null;
   const path = lines[i + 1]?.trim() ?? "";
   if (!isSplinePath(path)) return null;
@@ -151,7 +151,7 @@ function parseSplineBlock(lines, i) {
   const nums = [];
   let isMirrored = false;
   let j = numStart;
-  while (j < lines.length && nums.length < 14) {
+  while (j < lines.length && nums.length < 20) {
     const t = lines[j]?.trim();
     if (!t) {
       j += 1;
@@ -169,6 +169,9 @@ function parseSplineBlock(lines, i) {
     } else break;
   }
   if (nums.length < 5) return null;
+  const largo = nums[4];
+  const lastStandardIdx = isSplineH ? 12 : 11;
+  const localLength = nums.length > lastStandardIdx + 1 ? nums[nums.length - 1] : largo;
   return {
     path,
     id,
@@ -177,7 +180,8 @@ function parseSplineBlock(lines, i) {
     y: nums[2],
     z: nums[1],
     rotation: nums[3],
-    largo: nums[4],
+    largo,
+    localLength,
     radius: nums[5] ?? 0,
     isMirrored,
     endIdx: j,
@@ -833,12 +837,15 @@ function busstopWorld(graph, stop, splines, splineOrderByTile) {
   const spline = sid ? splines.get(sid) : null;
   if (spline) {
     const o = spline.origin || tileOriginPt;
+    const localLength = spline.localLength ?? 0;
+    let along = (stop.distAlong || 0) - localLength;
+    along = Math.max(0, Math.min(spline.largo, along));
     const local = splineLocalAt(
       spline.x,
       spline.y,
       spline.rotation,
       spline.radius,
-      stop.distAlong || 0,
+      along,
       spline.z,
     );
     const dir = dirFromRotation(local.rot);
@@ -941,7 +948,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
       }
 
       if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
-        const block = parseSplineBlock(lines, idx + 1);
+        const block = parseSplineBlock(lines, idx + 1, tag === "[spline_h]");
         if (block) {
           splineOrder.push(block.id);
           splines.set(block.id, {
