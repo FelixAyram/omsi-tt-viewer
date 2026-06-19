@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=30";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=30";
+import { APP_VERSION } from "./version.js?v=31";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=31";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=30";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=30";
-import { distPointPolyline } from "./geometry.js?v=30";
+} from "./omsi_browser.js?v=31";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=31";
+import { distPointPolyline } from "./geometry.js?v=31";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=30";
+} from "./debug.js?v=31";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -338,6 +338,9 @@ function updateStats() {
   if (loadTiming) {
     text += ` · ${formatLoadTiming(loadTiming)}`;
   }
+  if (s.parallelWorkers > 0) {
+    text += ` · ${s.parallelWorkers}/${s.parallelPoolSize ?? s.parallelWorkers} workers`;
+  }
   statsEl.textContent = text;
 }
 
@@ -382,7 +385,7 @@ function updateInfo(rail) {
 function routeMetaLabel(route) {
   const n = (route.railIds || []).length;
   const skipped = route.skippedCount || 0;
-  if (skipped > 0) return `${n} rieles (${skipped} omitidos)`;
+  if (skipped > 0) return `${n} rieles · ${skipped} omitido${skipped === 1 ? "" : "s"}`;
   return `${n} rieles`;
 }
 
@@ -397,21 +400,37 @@ function populateRoutes() {
 
   data.routes.forEach((route, idx) => {
     const id = `route-${idx}`;
-    const wrap = document.createElement("label");
-    wrap.className = "route-item";
+    const wrap = document.createElement("div");
+    wrap.className = "route-item-wrap";
+
+    const label = document.createElement("label");
+    label.className = "route-item";
     const color = routeColor(idx);
-    wrap.innerHTML = `
+    label.innerHTML = `
       <input type="checkbox" id="${id}" data-route-id="${route.id}" />
       <span class="swatch" style="background:${color}"></span>
       <span class="route-label">${route.label || route.file}</span>
       <span class="route-meta">${routeMetaLabel(route)}</span>
     `;
-    const cb = wrap.querySelector("input");
+    const cb = label.querySelector("input");
     cb.addEventListener("change", () => {
       if (cb.checked) selectedRoutes.add(route.id);
       else selectedRoutes.delete(route.id);
       draw();
     });
+    wrap.appendChild(label);
+
+    if (route.skippedEntries?.length) {
+      const detail = document.createElement("div");
+      detail.className = "route-skip-detail";
+      for (const entry of route.skippedEntries) {
+        const line = document.createElement("div");
+        line.textContent = entry.label;
+        detail.appendChild(line);
+      }
+      wrap.appendChild(detail);
+    }
+
     routeList.appendChild(wrap);
   });
 }

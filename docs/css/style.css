@@ -256,6 +256,19 @@ select:disabled {
   cursor: pointer;
 }
 
+.route-item-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.route-skip-detail {
+  font-size: 0.7rem;
+  color: #d4b44a;
+  padding: 0 2px 4px 28px;
+  line-height: 1.35;
+}
+
 .swatch {
   width: 14px;
   height: 14px;

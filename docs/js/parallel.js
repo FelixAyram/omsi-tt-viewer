@@ -1,4 +1,14 @@
 /** Ejecuta fn(item, index) en paralelo con límite de concurrencia. */
+export function hardwareThreads() {
+  return typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
+}
+
+/** Hilos lógicos para lecturas concurrentes (FSA / fetch). */
+export function ioConcurrency() {
+  const cores = hardwareThreads();
+  return Math.min(64, Math.max(32, cores * 4));
+}
+
 export async function runInParallel(items, fn, concurrency = 16) {
   if (!items.length) return [];
   const results = new Array(items.length);

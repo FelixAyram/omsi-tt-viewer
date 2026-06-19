@@ -1,7 +1,9 @@
 /** Pool reutilizable de Web Workers con cola de tareas. */
+import { hardwareThreads } from "../parallel.js?v=31";
+
 export function defaultPoolSize() {
-  const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 4 : 4;
-  return Math.min(4, Math.max(2, Math.ceil(cores / 2)));
+  const cores = hardwareThreads();
+  return Math.max(2, Math.min(16, cores - 1));
 }
 
 export function isWorkerSupported() {

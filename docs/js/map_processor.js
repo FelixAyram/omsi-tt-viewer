@@ -6,16 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=30";
-import { readOmsiText } from "./omsi_text.js?v=30";
+} from "./omsi_browser.js?v=31";
+import { readOmsiText } from "./omsi_text.js?v=31";
 import {
-  sampleSplineRail,
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=30";
-import { runInParallel } from "./parallel.js?v=30";
+} from "./geometry.js?v=31";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=31";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,13 +26,13 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=30";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=30";
+} from "./rail_builder.js?v=31";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=31";
 
 const TILE_SIZE = 300;
 const CONNECT_TOL = 0.1;
-const IO_CONCURRENCY = 16;
-const RAIL_BATCH_SIZE = 50;
+const IO_CONCURRENCY = ioConcurrency();
+const ENDPOINT_CELL_M = 2;
 const MAP_GLOBAL_RE = /(?:^|\/)maps\/([^/]+)\/global\.cfg$/i;
 
 function normPath(path) {
@@ -211,6 +210,72 @@ function parseSplineBlock(lines, i, isSplineH = false) {
     isMirrored,
     endIdx: j,
   };
+}
+
+function formatSkippedTrackEntry(entry) {
+  const ref = `${entry.kind} ${entry.elementId} · path ${entry.originalPathIdx ?? entry.pathIdx}`;
+  if (entry.skipReason === "missing") {
+    return (
+      `#${entry.index}: riel no encontrado (${ref}) — spline/objeto o path_idx ausente en el mapa`
+    );
+  }
+  if (entry.skipReason === "non-vehicle") {
+    return (
+      `#${entry.index}: no es vehículo, typ=${entry.typ} (${ref}) — path peatón/decorativo; OMSI lo ignora en rutas`
+    );
+  }
+  return `#${entry.index}: omitido (${ref})`;
+}
+
+function buildSkippedEntries(enriched) {
+  return enriched
+    .filter((e) => e.skipped)
+    .map((e) => ({
+      index: e.index,
+      elementId: e.elementId,
+      pathIdx: e.originalPathIdx,
+      kind: e.kind,
+      typ: e.typ,
+      skipReason: e.skipReason,
+      label: formatSkippedTrackEntry(e),
+    }));
+}
+
+function endpointCellKey(x, z, cellSize) {
+  return `${Math.floor(x / cellSize)},${Math.floor(z / cellSize)}`;
+}
+
+function buildEndpointIndex(points, cellSize = ENDPOINT_CELL_M) {
+  const buckets = new Map();
+  for (const item of points) {
+    if (!item.point) continue;
+    const key = endpointCellKey(item.point[0], item.point[2], cellSize);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(item);
+  }
+  return { buckets, cellSize };
+}
+
+function nearbyIndexedPoints(index, point, radiusCells = 1) {
+  if (!point) return [];
+  const { buckets, cellSize } = index;
+  const cx = Math.floor(point[0] / cellSize);
+  const cz = Math.floor(point[2] / cellSize);
+  const out = [];
+  for (let dx = -radiusCells; dx <= radiusCells; dx += 1) {
+    for (let dz = -radiusCells; dz <= radiusCells; dz += 1) {
+      const bucket = buckets.get(`${cx + dx},${cz + dz}`);
+      if (bucket) out.push(...bucket);
+    }
+  }
+  return out;
+}
+
+function railBatchSize(itemCount, poolSize) {
+  if (itemCount <= 0) return 40;
+  const workers = poolSize || defaultPoolSize();
+  const targetTasks = Math.max(workers * 16, 64);
+  return Math.max(10, Math.min(80, Math.ceil(itemCount / targetTasks)));
 }
 
 function isIntegerField(value) {
@@ -620,11 +685,12 @@ export function findFreeStartCandidates(rails, { tolerance = CONNECT_TOL } = {})
     legKey: entry.legKey,
     point: entry.end,
   }));
+  const endIndex = buildEndpointIndex(ends);
 
   return legs.map((entry) => {
     let incomingCount = 0;
     const incomingFrom = [];
-    for (const o of ends) {
+    for (const o of nearbyIndexedPoints(endIndex, entry.start)) {
       if (o.railId === entry.railId && o.legKey === entry.legKey) continue;
       if (!endpointsNear(o.point, entry.start, tolerance)) continue;
       incomingCount += 1;
@@ -652,8 +718,13 @@ function buildSplineAxisEnds(splines) {
   const out = new Map();
   for (const sp of splines.values()) {
     if (sp.isInvis) continue;
-    const pts = sampleSplineRail(sp, sp.origin, { lateral: 0, height: 0 });
-    if (pts.length >= 2) out.set(sp.id, { start: pts[0], end: pts.at(-1) });
+    const o = sp.origin;
+    const startLocal = splineLocalAt(sp.x, sp.y, sp.rotation, sp.radius, 0, sp.z);
+    const endLocal = splineLocalAt(sp.x, sp.y, sp.rotation, sp.radius, sp.largo, sp.z);
+    out.set(sp.id, {
+      start: [o.x + startLocal.x, startLocal.z, o.z + startLocal.y],
+      end: [o.x + endLocal.x, endLocal.z, o.z + endLocal.y],
+    });
   }
   return out;
 }
@@ -693,10 +764,14 @@ function buildPathLegEntries(rails) {
   return legs;
 }
 
-function isCirculationStartOpen(entry, allLegs, splineAxis, tolerance = CONNECT_TOL) {
+function isCirculationStartOpen(entry, allLegs, splineAxis, endIndex, tolerance = CONNECT_TOL) {
+  for (const other of nearbyIndexedPoints(endIndex, entry.start)) {
+    if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
+    if (!endpointsNear(other.point, entry.start, tolerance)) continue;
+    return false;
+  }
   for (const other of allLegs) {
     if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
-    if (endpointsNear(other.end, entry.start, tolerance)) return false;
     if (sameSplineReverseEndClosesForwardStart(entry, other, splineAxis)) return false;
   }
   return true;
@@ -710,6 +785,13 @@ function isCirculationStartOpen(entry, allLegs, splineAxis, tolerance = CONNECT_
 export function findOmsiVehicleSpawnRails(rails, splines) {
   const splineAxis = buildSplineAxisEnds(splines);
   const allLegs = buildPathLegEntries(rails);
+  const legByRailId = new Map();
+  for (const leg of allLegs) {
+    if (!legByRailId.has(leg.railId)) legByRailId.set(leg.railId, leg);
+  }
+  const endIndex = buildEndpointIndex(
+    allLegs.map((leg) => ({ railId: leg.railId, legKey: leg.legKey, point: leg.end })),
+  );
   const spawn = new Map();
 
   for (const rail of rails) {
@@ -717,11 +799,11 @@ export function findOmsiVehicleSpawnRails(rails, splines) {
     const sp = splines.get(rail.elementId);
     if (!sp || sp.isSplineH) continue;
 
-    const entry = allLegs.find((l) => l.railId === rail.id);
+    const entry = legByRailId.get(rail.id);
     if (!entry) continue;
 
     if (rail.direction !== PATH_DIR_REVERSE) continue;
-    if (!isCirculationStartOpen(entry, allLegs, splineAxis)) continue;
+    if (!isCirculationStartOpen(entry, allLegs, splineAxis, endIndex)) continue;
     spawn.set(rail.id, { point: entry.start, atEnd: false });
   }
   return spawn;
@@ -980,11 +1062,12 @@ function collectRailWorkItems(splines, objects, sliCache, minTx, minTy) {
 async function generateRails(splines, objects, sliCache, minTx, minTy, pool) {
   const { splineItems, objectItems } = collectRailWorkItems(splines, objects, sliCache, minTx, minTy);
   const tasks = [];
-  for (let i = 0; i < splineItems.length; i += RAIL_BATCH_SIZE) {
-    tasks.push({ type: "spline", items: splineItems.slice(i, i + RAIL_BATCH_SIZE) });
+  const batchSize = railBatchSize(splineItems.length + objectItems.length, pool?.size);
+  for (let i = 0; i < splineItems.length; i += batchSize) {
+    tasks.push({ type: "spline", items: splineItems.slice(i, i + batchSize) });
   }
-  for (let i = 0; i < objectItems.length; i += RAIL_BATCH_SIZE) {
-    tasks.push({ type: "sco", items: objectItems.slice(i, i + RAIL_BATCH_SIZE) });
+  for (let i = 0; i < objectItems.length; i += batchSize) {
+    tasks.push({ type: "sco", items: objectItems.slice(i, i + batchSize) });
   }
 
   let parallelWorkers = 0;
@@ -1202,6 +1285,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
         return { ...e, ...resolved };
       });
       const skippedCount = enriched.filter((e) => e.skipped).length;
+      const skippedEntries = buildSkippedEntries(enriched);
       return {
         id: norm.slice(prefix.length),
         file: norm.split("/").pop(),
@@ -1210,6 +1294,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
         railIds: [...used].sort(),
         entryCount: entries.length,
         skippedCount,
+        skippedEntries,
       };
     },
     IO_CONCURRENCY,
@@ -1254,6 +1339,8 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       objectCount: objects.size,
       parallelWorkers,
       parallelPoolSize: defaultPoolSize(),
+      hardwareThreads: hardwareThreads(),
+      ioConcurrency: IO_CONCURRENCY,
     },
     pathLegs,
   };
