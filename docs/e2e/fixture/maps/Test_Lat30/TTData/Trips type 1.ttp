@@ -1,0 +1,64 @@
+-----------------------
+Time Table Trip File
+-----------------------
+
+Created with Omsi Version 2.3.004
+Date: 18/6/2026
+
+[trip]
+tracks 1
+Terminus 1
+33
+
+.........................
+        Stations
+.........................
+
+[station]
+30
+0
+parada 1
+1
+3.971
+24.153
+24.153
+5.000
+
+[station]
+31
+5
+parada 2
+1
+2.833
+89.716
+45.145
+5.000
+
+[station]
+36
+17
+parada 3
+1
+3.788
+293.093
+39.335
+5.000
+
+
+.........................
+        Profiles
+.........................
+
+[profile]
+standard
+2.000
+
+[profile_otherstopping]
+0
+1
+[profile_otherstopping]
+1
+1
+[profile_otherstopping]
+2
+2

@@ -2,6 +2,8 @@
 // 1) Validar raíz y listar global.cfg en subcarpetas de maps/
 // 2) Al elegir mapa: cargar tiles, TTData y .sli/.sco referenciados
 
+import { readOmsiText } from "./omsi_text.js?v=12";
+
 function normPath(path) {
   return path.replace(/\\/g, "/");
 }
@@ -128,7 +130,7 @@ async function readFileFromRoot(rootHandle, relPath) {
 
 async function readTextFromRoot(rootHandle, relPath) {
   const file = await readFileFromRoot(rootHandle, relPath);
-  return file.text();
+  return readOmsiText(file);
 }
 
 async function getDirHandle(rootHandle, relPath) {
@@ -494,7 +496,7 @@ export async function validateMapFolderHandle(mapHandle) {
   let label = folder;
   try {
     const gf = await readFileFromHandle(mapHandle, "global.cfg");
-    const cfgName = parseGlobalName(await gf.text());
+    const cfgName = parseGlobalName(await readOmsiText(await gf.getFile()));
     if (cfgName && cfgName.toLowerCase() !== folder.toLowerCase()) {
       label = `${folder} — ${cfgName}`;
     }
@@ -599,7 +601,7 @@ function pickMapFolderWebkit(onProgress = null) {
             folder = gfParts[gfParts.length - 2];
           }
           try {
-            const cfgName = parseGlobalName(await fileMap.get(gfKey).text());
+            const cfgName = parseGlobalName(await readOmsiText(fileMap.get(gfKey)));
             if (cfgName) {
               label = folder && folder !== "Mapa" ? `${folder} — ${cfgName}` : cfgName;
               if (info.flatPaths && folder === "Mapa") folder = cfgName.slice(0, 48) || folder;

@@ -6,7 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=10";
+} from "./omsi_browser.js?v=12";
+import { readOmsiText } from "./omsi_text.js?v=12";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -14,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=10";
+} from "./geometry.js?v=12";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -76,7 +77,7 @@ function safeFloat(text, fallback = 0) {
 }
 
 function readText(file) {
-  return file.text();
+  return readOmsiText(file);
 }
 
 function parseTileCoords(name) {

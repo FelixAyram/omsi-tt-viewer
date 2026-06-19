@@ -1,0 +1,187 @@
+=== Created with Simple Spline Editor ===
+=== Author:  ===
+
+=== Height profiles ===
+== <Unnamed profile> ==
+== Breite: 10 Meter ==
+[heightprofile]
+-5
+5
+0.1
+0.1
+
+== <Unnamed profile> ==
+== Breite: 0 Meter ==
+[heightprofile]
+-5
+-5
+0.25
+0.1
+
+== <Unnamed profile> ==
+== Breite: 3 Meter ==
+[heightprofile]
+-8
+-5
+0.25
+0.25
+
+== <Unnamed profile> ==
+== Breite: 0 Meter ==
+[heightprofile]
+5
+5
+0.1
+0.25
+
+== <Unnamed profile> ==
+== Breite: 3 Meter ==
+[heightprofile]
+5
+8
+0.25
+0.25
+
+=== Textures ===
+== 0 ==
+[texture]
+str_gehweg05.dds
+[matl]
+str_gehweg05.dds
+0
+[matl_alpha]
+2
+
+== 1 ==
+[texture]
+yellow.dds
+[matl]
+yellow.dds
+0
+[matl_alpha]
+2
+
+== 2 ==
+[texture]
+calle 10m.png
+[matl]
+calle 10m.png
+0
+[matl_alpha]
+2
+
+=== Textur wrappings ===
+== START ==
+[profile]
+2
+== FROM ==
+[profilepnt]
+-5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+1
+== FROM ==
+[profilepnt]
+-5
+0.25
+0
+0.2
+== TO ==
+[profilepnt]
+-5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+1
+== FROM ==
+[profilepnt]
+5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+5
+0.25
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+0
+== FROM ==
+[profilepnt]
+-8
+0.25
+0
+0.2
+== TO ==
+[profilepnt]
+-5
+0.25
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+0
+== FROM ==
+[profilepnt]
+5
+0.25
+1
+0.2
+== TO ==
+[profilepnt]
+8
+0.25
+0
+0.2
+== END ==
+
+=== Pathes ===
+[path]
+0
+1.5
+0.1
+2.7
+0
+
+[path]
+0
+-1.5
+0.1
+2.7
+0
+
+[path]
+1
+7.5
+0.25
+1
+2
+
+[path]
+1
+-7.5
+0.25
+1
+2
+

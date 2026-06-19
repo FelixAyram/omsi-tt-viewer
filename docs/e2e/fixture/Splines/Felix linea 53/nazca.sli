@@ -1,0 +1,339 @@
+=== Created with Simple Spline Editor ===
+=== Author:  ===
+
+=== Height profiles ===
+== <Unnamed profile> ==
+== Breite: 19 Meter ==
+[heightprofile]
+-9.5
+9.5
+0.1
+0.1
+
+== <Unnamed profile> ==
+== Breite: 0 Meter ==
+[heightprofile]
+-9.5
+-9.5
+0.25
+0.1
+
+== <Unnamed profile> ==
+== Breite: 0 Meter ==
+[heightprofile]
+9.5
+9.5
+0.1
+0.25
+
+== <Unnamed profile> ==
+== Breite: 3 Meter ==
+[heightprofile]
+-12.5
+-9.5
+0.25
+0.25
+
+== <Unnamed profile> ==
+== Breite: 3 Meter ==
+[heightprofile]
+9.5
+12.5
+0.25
+0.25
+
+=== Textures ===
+== 0 ==
+[texture]
+asfalto_1line_disc_w.bmp
+[matl]
+asfalto_1line_disc_w.bmp
+0
+[matl_alpha]
+2
+
+== 1 ==
+[texture]
+asfalto.dds
+[matl]
+asfalto.dds
+0
+[matl_alpha]
+2
+
+== 2 ==
+[texture]
+czda_wdiscR.dds
+[matl]
+czda_wdiscR.dds
+0
+[matl_alpha]
+2
+
+== 3 ==
+[texture]
+yellow.png
+[matl]
+yellow.png
+0
+[matl_alpha]
+2
+
+== 4 ==
+[texture]
+str_gehweg05.bmp
+[matl]
+str_gehweg05.bmp
+0
+[matl_alpha]
+2
+
+== 5 ==
+[texture]
+str_asphdrk.bmp
+[matl]
+str_asphdrk.bmp
+0
+[matl_alpha]
+2
+
+== 6 ==
+[texture]
+asfalto_nwy_disc.bmp
+[matl]
+asfalto_nwy_disc.bmp
+0
+[matl_alpha]
+2
+
+=== Textur wrappings ===
+== START ==
+[profile]
+4
+== FROM ==
+[profilepnt]
+-12.5
+0.25
+0
+0.2
+== TO ==
+[profilepnt]
+-9.5
+0.25
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+4
+== FROM ==
+[profilepnt]
+9.5
+0.25
+1
+0.2
+== TO ==
+[profilepnt]
+12.5
+0.25
+0
+0.2
+== END ==
+
+== START ==
+[profile]
+3
+== FROM ==
+[profilepnt]
+-9.5
+0.25
+0
+0.2
+== TO ==
+[profilepnt]
+-9.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+3
+== FROM ==
+[profilepnt]
+9.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+9.5
+0.25
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+5
+== FROM ==
+[profilepnt]
+-9.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+-6.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+0
+== FROM ==
+[profilepnt]
+-6.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+-3.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+0
+== FROM ==
+[profilepnt]
+-6.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+3.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+2
+== FROM ==
+[profilepnt]
+0.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+3.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+2
+== FROM ==
+[profilepnt]
+3.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+6.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+1
+== FROM ==
+[profilepnt]
+6.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+9.5
+0.1
+1
+0.2
+== END ==
+
+== START ==
+[profile]
+3
+== FROM ==
+[profilepnt]
+-0.5
+0.1
+0
+0.2
+== TO ==
+[profilepnt]
+0.5
+0.1
+1
+0.2
+== END ==
+
+=== Pathes ===
+[path]
+1
+-12
+0.25
+0.5
+2
+
+[path]
+0
+-5
+0.1
+2.7
+1
+
+[path]
+0
+-2
+0.1
+2.7
+1
+
+[path]
+0
+2
+0.1
+2.7
+0
+
+[path]
+0
+5
+0.1
+2.7
+0
+
+[path]
+1
+12
+0.25
+0.5
+2
+

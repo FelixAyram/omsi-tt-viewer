@@ -1,0 +1,482 @@
+-----------------------
+Time Table Line File
+-----------------------
+
+Created with Omsi Version 2.3.004
+Date: 18/6/2026
+
+[userallowed]
+
+[priority]
+1
+------------------------------------
+
+[newtour]
+Tour 1
+Bus Veolia
+1023
+
+------------------------------------
+
+  Dep.: 4:0:0
+[addtrip]
+Trips type 1
+0
+240.000
+
+  Dep.: 4:15:0
+[addtrip]
+Trips type 1
+0
+255.000
+
+  Dep.: 4:30:0
+[addtrip]
+Trips type 1
+0
+270.000
+
+  Dep.: 4:45:0
+[addtrip]
+Trips type 1
+0
+285.000
+
+  Dep.: 5:0:0
+[addtrip]
+Trips type 1
+0
+300.000
+
+  Dep.: 5:15:0
+[addtrip]
+Trips type 1
+0
+315.000
+
+  Dep.: 5:30:0
+[addtrip]
+Trips type 1
+0
+330.000
+
+  Dep.: 5:45:0
+[addtrip]
+Trips type 1
+0
+345.000
+
+  Dep.: 6:0:0
+[addtrip]
+Trips type 1
+0
+360.000
+
+  Dep.: 6:15:0
+[addtrip]
+Trips type 1
+0
+375.000
+
+  Dep.: 6:30:0
+[addtrip]
+Trips type 1
+0
+390.000
+
+  Dep.: 6:45:0
+[addtrip]
+Trips type 1
+0
+405.000
+
+  Dep.: 7:0:0
+[addtrip]
+Trips type 1
+0
+420.000
+
+  Dep.: 7:15:0
+[addtrip]
+Trips type 1
+0
+435.000
+
+  Dep.: 7:30:0
+[addtrip]
+Trips type 1
+0
+450.000
+
+  Dep.: 7:45:0
+[addtrip]
+Trips type 1
+0
+465.000
+
+  Dep.: 8:0:0
+[addtrip]
+Trips type 1
+0
+480.000
+
+  Dep.: 8:15:0
+[addtrip]
+Trips type 1
+0
+495.000
+
+  Dep.: 8:30:0
+[addtrip]
+Trips type 1
+0
+510.000
+
+  Dep.: 8:45:0
+[addtrip]
+Trips type 1
+0
+525.000
+
+  Dep.: 9:0:0
+[addtrip]
+Trips type 1
+0
+540.000
+
+  Dep.: 9:15:0
+[addtrip]
+Trips type 1
+0
+555.000
+
+  Dep.: 9:30:0
+[addtrip]
+Trips type 1
+0
+570.000
+
+  Dep.: 9:45:0
+[addtrip]
+Trips type 1
+0
+585.000
+
+  Dep.: 10:0:0
+[addtrip]
+Trips type 1
+0
+600.000
+
+  Dep.: 10:15:0
+[addtrip]
+Trips type 1
+0
+615.000
+
+  Dep.: 10:30:0
+[addtrip]
+Trips type 1
+0
+630.000
+
+  Dep.: 10:45:0
+[addtrip]
+Trips type 1
+0
+645.000
+
+  Dep.: 11:0:0
+[addtrip]
+Trips type 1
+0
+660.000
+
+  Dep.: 11:15:0
+[addtrip]
+Trips type 1
+0
+675.000
+
+  Dep.: 11:30:0
+[addtrip]
+Trips type 1
+0
+690.000
+
+  Dep.: 11:45:0
+[addtrip]
+Trips type 1
+0
+705.000
+
+  Dep.: 12:0:0
+[addtrip]
+Trips type 1
+0
+720.000
+
+  Dep.: 12:15:0
+[addtrip]
+Trips type 1
+0
+735.000
+
+  Dep.: 12:30:0
+[addtrip]
+Trips type 1
+0
+750.000
+
+  Dep.: 12:45:0
+[addtrip]
+Trips type 1
+0
+765.000
+
+  Dep.: 13:0:0
+[addtrip]
+Trips type 1
+0
+780.000
+
+  Dep.: 13:15:0
+[addtrip]
+Trips type 1
+0
+795.000
+
+  Dep.: 13:30:0
+[addtrip]
+Trips type 1
+0
+810.000
+
+  Dep.: 13:45:0
+[addtrip]
+Trips type 1
+0
+825.000
+
+  Dep.: 14:0:0
+[addtrip]
+Trips type 1
+0
+840.000
+
+  Dep.: 14:15:0
+[addtrip]
+Trips type 1
+0
+855.000
+
+  Dep.: 14:30:0
+[addtrip]
+Trips type 1
+0
+870.000
+
+  Dep.: 14:45:0
+[addtrip]
+Trips type 1
+0
+885.000
+
+  Dep.: 15:0:0
+[addtrip]
+Trips type 1
+0
+900.000
+
+  Dep.: 15:15:0
+[addtrip]
+Trips type 1
+0
+915.000
+
+  Dep.: 15:30:0
+[addtrip]
+Trips type 1
+0
+930.000
+
+  Dep.: 15:45:0
+[addtrip]
+Trips type 1
+0
+945.000
+
+  Dep.: 16:0:0
+[addtrip]
+Trips type 1
+0
+960.000
+
+  Dep.: 16:15:0
+[addtrip]
+Trips type 1
+0
+975.000
+
+  Dep.: 16:30:0
+[addtrip]
+Trips type 1
+0
+990.000
+
+  Dep.: 16:45:0
+[addtrip]
+Trips type 1
+0
+1005.000
+
+  Dep.: 17:0:0
+[addtrip]
+Trips type 1
+0
+1020.000
+
+  Dep.: 17:15:0
+[addtrip]
+Trips type 1
+0
+1035.000
+
+  Dep.: 17:30:0
+[addtrip]
+Trips type 1
+0
+1050.000
+
+  Dep.: 17:45:0
+[addtrip]
+Trips type 1
+0
+1065.000
+
+  Dep.: 18:0:0
+[addtrip]
+Trips type 1
+0
+1080.000
+
+  Dep.: 18:15:0
+[addtrip]
+Trips type 1
+0
+1095.000
+
+  Dep.: 18:30:0
+[addtrip]
+Trips type 1
+0
+1110.000
+
+  Dep.: 18:45:0
+[addtrip]
+Trips type 1
+0
+1125.000
+
+  Dep.: 19:0:0
+[addtrip]
+Trips type 1
+0
+1140.000
+
+  Dep.: 19:15:0
+[addtrip]
+Trips type 1
+0
+1155.000
+
+  Dep.: 19:30:0
+[addtrip]
+Trips type 1
+0
+1170.000
+
+  Dep.: 19:45:0
+[addtrip]
+Trips type 1
+0
+1185.000
+
+  Dep.: 20:0:0
+[addtrip]
+Trips type 1
+0
+1200.000
+
+  Dep.: 20:15:0
+[addtrip]
+Trips type 1
+0
+1215.000
+
+  Dep.: 20:30:0
+[addtrip]
+Trips type 1
+0
+1230.000
+
+  Dep.: 20:45:0
+[addtrip]
+Trips type 1
+0
+1245.000
+
+  Dep.: 21:0:0
+[addtrip]
+Trips type 1
+0
+1260.000
+
+  Dep.: 21:15:0
+[addtrip]
+Trips type 1
+0
+1275.000
+
+  Dep.: 21:30:0
+[addtrip]
+Trips type 1
+0
+1290.000
+
+  Dep.: 21:45:0
+[addtrip]
+Trips type 1
+0
+1305.000
+
+  Dep.: 22:0:0
+[addtrip]
+Trips type 1
+0
+1320.000
+
+  Dep.: 22:15:0
+[addtrip]
+Trips type 1
+0
+1335.000
+
+  Dep.: 22:30:0
+[addtrip]
+Trips type 1
+0
+1350.000
+
+  Dep.: 22:45:0
+[addtrip]
+Trips type 1
+0
+1365.000
+
+  Dep.: 23:0:0
+[addtrip]
+Trips type 1
+0
+1380.000
+

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>E2E — procesador mapa OMSI</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; background: #111; color: #eee; }
+    #status { margin-top: 12px; font-family: Consolas, monospace; white-space: pre-wrap; }
+    .fail { color: #f88; }
+    .ok { color: #8f8; }
+  </style>
+</head>
+<body>
+  <h1>E2E procesador OMSI (webkit fileMap)</h1>
+  <p id="status">Esperando runE2eLoad()…</p>
+  <script type="module">
+    import {
+      loadMapLazy,
+      validateOmsiInstall,
+      listMapCatalog,
+      processMapFolder,
+    } from "./js/map_processor.js?v=12";
+
+    const statusEl = document.getElementById("status");
+
+    function setStatus(msg, ok = null) {
+      statusEl.textContent = msg;
+      statusEl.className = ok === true ? "ok" : ok === false ? "fail" : "";
+    }
+
+    async function buildFileMapFromManifest(manifestUrl) {
+      const manifest = await fetch(manifestUrl).then((r) => {
+        if (!r.ok) throw new Error(`Manifest HTTP ${r.status}: ${manifestUrl}`);
+        return r.json();
+      });
+      const base = manifestUrl.replace(/\/[^/]+$/, "/");
+      const fileMap = new Map();
+      for (const rel of manifest.files) {
+        const url = `${base}fixture/${rel}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Falta en fixture: ${rel} (${res.status})`);
+        const blob = await res.blob();
+        const name = rel.split("/").pop();
+        fileMap.set(rel.replace(/\\/g, "/"), new File([blob], name, { type: blob.type || "application/octet-stream" }));
+      }
+      return { manifest, fileMap };
+    }
+
+    window.runE2eLoad = async (manifestUrl = "./e2e/manifest.json") => {
+      setStatus("Cargando manifest y archivos…");
+      const { manifest, fileMap } = await buildFileMapFromManifest(manifestUrl);
+      const mapDir = manifest.mapDir || "maps/Test_Lat30";
+
+      setStatus(`fileMap: ${fileMap.size} archivos\nValidando instalación…`);
+      validateOmsiInstall(fileMap);
+
+      const globals = [...fileMap.keys()].filter((k) => /global\.cfg$/i.test(k));
+      const rootTiles = [...fileMap.keys()].filter(
+        (k) => new RegExp(`^${mapDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/tile_-?\\d+_-?\\d+\\.map$`, "i").test(k),
+      );
+      if (!globals.length) throw new Error("E2E: sin global.cfg en fileMap");
+      if (!rootTiles.length) throw new Error(`E2E: sin tiles en raíz de ${mapDir}`);
+
+      setStatus(`global.cfg OK, tiles raíz: ${rootTiles.length}\nListando mapas…`);
+      const catalog = await listMapCatalog(fileMap);
+      if (!catalog.length) throw new Error("E2E: listMapCatalog vacío");
+
+      setStatus(`Catálogo: ${catalog.length} mapa(s)\nProcesando ${mapDir}…`);
+      const omsiRoot = { mode: "webkit", label: manifest.omsiLabel || "E2E", fileMap };
+      const json = await loadMapLazy(omsiRoot, mapDir, (m) => {
+        statusEl.textContent = `${statusEl.textContent.split("\n").slice(0, 3).join("\n")}\n${m}`;
+      });
+
+      const rails = json.rails?.length ?? 0;
+      const free = json.rails?.filter((r) => r.freeStart).length ?? 0;
+      const busstops = json.busstops?.length ?? 0;
+      const routes = json.routes?.length ?? 0;
+
+      const result = {
+        ok: rails >= 50,
+        mapDir,
+        mapName: json.mapName,
+        rails,
+        free,
+        busstops,
+        routes,
+        fileMapSize: fileMap.size,
+        rootTiles: rootTiles.length,
+        globals: globals.length,
+        catalog: catalog.map((c) => c.dir),
+      };
+
+      setStatus(
+        `OK procesador webkit\n` +
+          `Mapa: ${result.mapName}\n` +
+          `Rieles: ${rails} (${free} libres)\n` +
+          `Paradas: ${busstops}, rutas: ${routes}\n` +
+          `fileMap: ${fileMap.size}, tiles raíz: ${rootTiles.length}`,
+        result.ok,
+      );
+      return result;
+    };
+
+    window.runE2eResolveOnly = async (manifestUrl = "./e2e/manifest.json") => {
+      const { manifest, fileMap } = await buildFileMapFromManifest(manifestUrl);
+      const mapDir = manifest.mapDir || "maps/Test_Lat30";
+      await processMapFolder(fileMap, mapDir, () => {});
+      return { ok: true };
+    };
+
+    const params = new URLSearchParams(location.search);
+    if (params.get("autorun") === "1") {
+      runE2eLoad().catch((err) => {
+        setStatus(`ERROR: ${err.message}\n${err.stack || ""}`, false);
+        window.__e2eError = err.message;
+      });
+    }
+  </script>
+</body>
+</html>

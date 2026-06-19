@@ -1,0 +1,24 @@
+{
+  "mapDir": "maps/Test_Lat30",
+  "omsiLabel": "E2E OMSI 2",
+  "files": [
+    "Sceneryobjects/Felix/NAZCA CRUCE.sco",
+    "Sceneryobjects/Generic/bus_stop.sco",
+    "Sceneryobjects/Generic/entrypoint_bus.sco",
+    "Splines/Felix linea 53/10m si estacionar.sli",
+    "Splines/Felix linea 53/nazca.sli",
+    "maps/Test_Lat30/TTData/Busstops.cfg",
+    "maps/Test_Lat30/TTData/StnLinks.cfg",
+    "maps/Test_Lat30/TTData/Terminus 1 table editor.ttl",
+    "maps/Test_Lat30/TTData/Trips type 1.ttp",
+    "maps/Test_Lat30/TTData/tracks 1.ttr",
+    "maps/Test_Lat30/global.cfg",
+    "maps/Test_Lat30/tile_3640_5728.map",
+    "maps/Test_Lat30/tile_3640_5729.map",
+    "maps/Test_Lat30/tile_3640_5730.map",
+    "maps/Test_Lat30/tile_3641_5728.map",
+    "maps/Test_Lat30/tile_3641_5729.map",
+    "maps/Test_Lat30/tile_3641_5730.map"
+  ],
+  "source": "F:\\SteamLibrary\\steamapps\\common\\OMSI 2"
+}
