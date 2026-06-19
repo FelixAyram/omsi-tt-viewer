@@ -1,6 +1,7 @@
-/** Geometría OMSI 2 — splines y paths .sco con radio (port de spline_geometry.py). */
+/** Geometría OMSI 2 — splines (.sli) y paths .sco (alineado con OmsiScoPathGeometry.cs). */
 
 const DEG = Math.PI / 180;
+const SCO_STRAIGHT_EPS = 0.001;
 
 export function dirFromRotation(rotDeg) {
   const r = rotDeg * DEG;
@@ -84,25 +85,101 @@ export function sampleSplineRail(
   return pts;
 }
 
-/** Polilínea mundial de path .sco (local → rotación objeto → tile). */
+function isNearStraightSco(path) {
+  return !path.radius || Math.abs(path.radius) < SCO_STRAIGHT_EPS;
+}
+
+/** Algunos .sco guardan el largo en grados de arco, no metros (Unity IsLengthInDegrees). */
+export function isScoLengthInDegrees(path) {
+  if (isNearStraightSco(path)) return false;
+  const absLen = Math.abs(path.length);
+  const rAbs = Math.abs(path.radius);
+  if (absLen < 0.001 || rAbs < SCO_STRAIGHT_EPS || absLen > 360) return false;
+  return absLen / rAbs > Math.PI * 1.05;
+}
+
+export function estimateScoSegmentLengthMeters(path) {
+  const length = Math.abs(path.length) || 0.01;
+  if (!isScoLengthInDegrees(path)) return length;
+  return Math.abs(path.radius) * Math.abs(path.length) * DEG;
+}
+
+function scoHeightDeltaAt(path, along, length) {
+  const p1 = Math.max(-500, Math.min(500, path.gradStart ?? 0)) / 100;
+  const p2 = Math.max(-500, Math.min(500, path.gradEnd ?? 0)) / 100;
+  if (Math.abs(p1) < 1e-9 && Math.abs(p2) < 1e-9) return 0;
+  const acc = (p2 - p1) / Math.max(0.001, length);
+  return p1 * along + 0.5 * acc * along * along;
+}
+
+/** Muestra en coords OMSI del SCO (X, Y plano, Z altura) — port de SampleAttachmentFrame. */
+export function sampleScoAttachmentFrame(path, t, lateralOffset = 0) {
+  const clampT = Math.max(0, Math.min(1, t));
+  const length = estimateScoSegmentLengthMeters(path);
+  const along = length * clampT;
+  const tRel = length > 0.001 ? along / length : 0;
+
+  const radius = path.radius;
+  const isRecto = isNearStraightSco(path);
+  const rAbs = Math.max(SCO_STRAIGHT_EPS, Math.abs(radius));
+  const dir = radius >= 0 ? 1 : -1;
+  const angTotal = isRecto ? 0 : length / rAbs;
+
+  let localX;
+  let localZ;
+  if (isRecto) {
+    localX = lateralOffset;
+    localZ = along;
+  } else {
+    const ang = tRel * angTotal;
+    const cosA = Math.cos(ang);
+    const sinA = Math.sin(ang);
+    const lat = lateralOffset;
+    const rCenter = rAbs - lat * dir;
+    localX = (rAbs - cosA * rCenter) * dir;
+    localZ = sinA * rCenter;
+  }
+
+  const hdgRad = path.angle * DEG;
+  const sinH = Math.sin(hdgRad);
+  const cosH = Math.cos(hdgRad);
+  const omsiX = path.sx + sinH * localZ + cosH * localX;
+  const omsiY = path.sy + cosH * localZ - sinH * localX;
+  const omsiZ = path.sz + scoHeightDeltaAt(path, along, length);
+  return { omsiX, omsiY, omsiZ };
+}
+
+/** OMSI (X, Y, Z) → visor/Unity local (X, altura, Z). */
+export function omsiScoToViewerLocal(omsiX, omsiY, omsiZ) {
+  return { x: omsiX, y: omsiZ, z: omsiY };
+}
+
+export function computeScoSampleCount(path, targetIntervalMeters = 2) {
+  const length = estimateScoSegmentLengthMeters(path);
+  if (length < 0.001) return 2;
+  const intervalSamples = Math.max(2, Math.ceil(length / Math.max(0.5, targetIntervalMeters)) + 1);
+  if (isNearStraightSco(path)) {
+    return Math.min(64, intervalSamples);
+  }
+  const angTotal = length / Math.abs(path.radius);
+  const omsiSamples = Math.max(2, Math.ceil((angTotal * 180) / Math.PI / 0.5) + 1);
+  return Math.min(96, Math.max(omsiSamples, intervalSamples));
+}
+
+/** Polilínea mundial de path .sco: local SCO → rotación objeto → tile (como Unity). */
 export function sampleScoRail(obj, scoPath, tileOrigin, segments = null) {
-  const n = segments ?? segmentCount(scoPath.length, scoPath.radius);
+  const n = segments ?? computeScoSampleCount(scoPath);
   const pts = [];
   for (let i = 0; i <= n; i += 1) {
-    const d = (scoPath.length * i) / n;
-    const local = splineLocalAt(
-      scoPath.sx,
-      scoPath.sy,
-      scoPath.angle,
-      scoPath.radius,
-      d,
-      scoPath.sz,
-    );
-    const p = rotateY({ x: local.x, z: local.y }, obj.rotation);
-    const wx = tileOrigin.x + obj.x + p.x;
-    const wz = tileOrigin.z + obj.y + p.z;
-    const wy = obj.z + local.z;
-    pts.push([wx, wy, wz]);
+    const t = n <= 0 ? 0 : i / n;
+    const { omsiX, omsiY, omsiZ } = sampleScoAttachmentFrame(scoPath, t);
+    const local = omsiScoToViewerLocal(omsiX, omsiY, omsiZ);
+    const p = rotateY({ x: local.x, z: local.z }, obj.rotation);
+    pts.push([
+      tileOrigin.x + obj.x + p.x,
+      obj.z + local.y,
+      tileOrigin.z + obj.y + p.z,
+    ]);
   }
   return pts;
 }

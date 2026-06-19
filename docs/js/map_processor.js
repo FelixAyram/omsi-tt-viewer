@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=13";
-import { readOmsiText } from "./omsi_text.js?v=13";
+} from "./omsi_browser.js?v=14";
+import { readOmsiText } from "./omsi_text.js?v=14";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=13";
+} from "./geometry.js?v=14";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -238,11 +238,13 @@ function parseScoPaths(text) {
       pathIndex += 1;
       out.set(pathIndex, {
         sx: vals[0],
-        sy: vals[2],
-        sz: vals[1],
+        sy: vals[1],
+        sz: vals[2],
         angle: vals[3],
         radius: vals[4],
         length: Math.abs(vals[5]) || 0.01,
+        gradStart: vals[6] ?? 0,
+        gradEnd: vals[7] ?? 0,
         typ: vals.length > 8 ? (vals[8] | 0) : VEHICLE_TYP,
       });
     }

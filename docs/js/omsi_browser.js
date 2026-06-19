@@ -2,7 +2,7 @@
 // 1) Validar raíz y listar global.cfg en subcarpetas de maps/
 // 2) Al elegir mapa: cargar tiles, TTData y .sli/.sco referenciados
 
-import { readOmsiText } from "./omsi_text.js?v=13";
+import { readOmsiText } from "./omsi_text.js?v=14";
 
 function normPath(path) {
   return path.replace(/\\/g, "/");
