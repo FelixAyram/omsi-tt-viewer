@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=23";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=23";
+import { APP_VERSION } from "./version.js?v=24";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=24";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=23";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=23";
-import { distPointPolyline } from "./geometry.js?v=23";
+} from "./omsi_browser.js?v=24";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=24";
+import { distPointPolyline } from "./geometry.js?v=24";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=23";
+} from "./debug.js?v=24";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -375,6 +375,13 @@ function updateInfo(rail) {
   `;
 }
 
+function routeMetaLabel(route) {
+  const n = (route.railIds || []).length;
+  const skipped = route.skippedCount || 0;
+  if (skipped > 0) return `${n} rieles (${skipped} omitidos)`;
+  return `${n} rieles`;
+}
+
 function populateRoutes() {
   routeList.innerHTML = "";
   selectedRoutes.clear();
@@ -393,7 +400,7 @@ function populateRoutes() {
       <input type="checkbox" id="${id}" data-route-id="${route.id}" />
       <span class="swatch" style="background:${color}"></span>
       <span class="route-label">${route.label || route.file}</span>
-      <span class="route-meta">${(route.railIds || []).length} rieles</span>
+      <span class="route-meta">${routeMetaLabel(route)}</span>
     `;
     const cb = wrap.querySelector("input");
     cb.addEventListener("change", () => {

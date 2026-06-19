@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=23";
-import { readOmsiText } from "./omsi_text.js?v=23";
+} from "./omsi_browser.js?v=24";
+import { readOmsiText } from "./omsi_text.js?v=24";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=23";
+} from "./geometry.js?v=24";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -274,6 +274,13 @@ function parseScoPaths(text) {
   return out;
 }
 
+function isIntegerField(value) {
+  const text = String(value ?? "").trim();
+  if (!text || text.includes(".") || /e/i.test(text)) return false;
+  return /^-?\d+$/.test(text);
+}
+
+/** Parsea [track_entry] OMSI 2.3 (global_path entero) o legado pre-2.3. */
 function parseTtr(text) {
   const lines = text.split(/\r?\n/);
   const entries = [];
@@ -281,18 +288,120 @@ function parseTtr(text) {
   while (i < lines.length) {
     const m = /^\s*(\d+)\s*:?\s*$/.exec(lines[i]);
     if (m && lines[i + 1]?.trim() === "[track_entry]") {
-      entries.push({
-        elementId: lines[i + 2]?.trim() ?? "",
-        pathIdx: lines[i + 3]?.trim() ?? "",
-        routeId: lines[i + 4]?.trim() ?? "",
-        distance: lines[i + 5]?.trim() ?? "",
-      });
-      i += 8;
+      const elementId = lines[i + 2]?.trim() ?? "";
+      const pathIdx = lines[i + 3]?.trim() ?? "";
+      const routeId = lines[i + 4]?.trim() ?? "";
+      const fieldAfterKachel = lines[i + 5]?.trim() ?? "";
+      if (isIntegerField(fieldAfterKachel)) {
+        const fstrnCount = parseInt(lines[i + 7]?.trim() || "0", 10) || 0;
+        const fstrnIds = [];
+        for (let j = 0; j < fstrnCount; j += 1) {
+          fstrnIds.push(lines[i + 8 + j]?.trim() ?? "");
+        }
+        entries.push({
+          index: parseInt(m[1], 10),
+          elementId,
+          pathIdx,
+          routeId,
+          globalPath: fieldAfterKachel,
+          distance: lines[i + 6]?.trim() ?? "",
+          fstrnIds,
+          formatV23: true,
+        });
+        i += 8 + fstrnCount;
+      } else {
+        entries.push({
+          index: parseInt(m[1], 10),
+          elementId,
+          pathIdx,
+          routeId,
+          globalPath: "",
+          distance: fieldAfterKachel,
+          speed: lines[i + 6]?.trim() ?? "",
+          flag: lines[i + 7]?.trim() ?? "",
+          fstrnIds: [],
+          formatV23: false,
+        });
+        i += 8;
+      }
+      if (i < lines.length && !lines[i]?.trim()) i += 1;
       continue;
     }
     i += 1;
   }
   return entries;
+}
+
+function defaultVehicleSplinePath(pathsMap) {
+  const sorted = [...pathsMap.keys()].sort((a, b) => a - b);
+  for (const idx of sorted) {
+    if (pathsMap.get(idx)?.typ === VEHICLE_TYP) return idx;
+  }
+  return sorted[0] ?? 0;
+}
+
+/** Paths .sco: índice 1-based; 0 o inexistente → mínimo o más cercano (como OMSI). */
+function normalizeObjectPath(pathsMap, pathIdxStr) {
+  if (!pathsMap?.size) return pathIdxStr;
+  const pidx = parseInt(pathIdxStr, 10);
+  if (!Number.isFinite(pidx)) return String(Math.min(...pathsMap.keys()));
+  if (pathsMap.has(pidx)) return String(pidx);
+  if (pidx <= 0) return String(Math.min(...pathsMap.keys()));
+  const paths = [...pathsMap.keys()].sort((a, b) => a - b);
+  let best = paths[0];
+  let bestDist = Math.abs(best - pidx);
+  for (const p of paths) {
+    const dist = Math.abs(p - pidx);
+    if (dist < bestDist) {
+      best = p;
+      bestDist = dist;
+    }
+  }
+  return String(best);
+}
+
+function normalizeSplinePath(pathsMap, pathIdxStr) {
+  if (!pathsMap?.size) return pathIdxStr;
+  const pidx = parseInt(pathIdxStr, 10);
+  if (Number.isFinite(pidx) && pathsMap.has(pidx)) return String(pidx);
+  return String(defaultVehicleSplinePath(pathsMap));
+}
+
+function resolveTrackEntryRail(entry, ctx) {
+  const { splines, objects, railsById, sliCache } = ctx;
+  const kind = splines.has(entry.elementId) ? "spline" : "object";
+  let pathIdx = entry.pathIdx;
+  let typ = VEHICLE_TYP;
+
+  if (kind === "object") {
+    const paths = objects.get(entry.elementId)?.paths;
+    pathIdx = normalizeObjectPath(paths, pathIdx);
+    typ = paths?.get(parseInt(pathIdx, 10))?.typ ?? VEHICLE_TYP;
+  } else {
+    const sp = splines.get(entry.elementId);
+    const sliKey = sp?.path.replace(/\\/g, "/").toLowerCase();
+    const paths = sliCache.get(sliKey) || new Map();
+    pathIdx = normalizeSplinePath(paths, pathIdx);
+    typ = paths.get(parseInt(pathIdx, 10))?.typ ?? VEHICLE_TYP;
+  }
+
+  const railId = railKey(kind, entry.elementId, pathIdx);
+  const rail = railsById.get(railId);
+  const skipped = !rail || typ !== VEHICLE_TYP;
+  let skipReason = null;
+  if (!rail) skipReason = "missing";
+  else if (typ !== VEHICLE_TYP) skipReason = "non-vehicle";
+
+  return {
+    kind,
+    pathIdx,
+    originalPathIdx: entry.pathIdx,
+    railId,
+    typ,
+    rail,
+    skipped,
+    skipReason,
+  };
 }
 
 function parseTtpLabel(text) {
@@ -992,19 +1101,23 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     if (seenTtr.has(norm)) continue;
     seenTtr.add(norm);
     const entries = parseTtr(await readText(file));
+    const railsById = new Map(rails.map((r) => [r.id, r]));
+    const resolveCtx = { splines, objects, railsById, sliCache };
     const used = new Set();
     const enriched = entries.map((e) => {
-      const kind = splines.has(e.elementId) ? "spline" : "object";
-      const rid = railKey(kind, e.elementId, e.pathIdx);
-      used.add(rid);
-      return { ...e, kind, railId: rid };
+      const resolved = resolveTrackEntryRail(e, resolveCtx);
+      if (!resolved.skipped) used.add(resolved.railId);
+      return { ...e, ...resolved };
     });
+    const skippedCount = enriched.filter((e) => e.skipped).length;
     routes.push({
       id: norm.slice(prefix.length),
       file: norm.split("/").pop(),
       label: ttrLabels.get(norm) || norm.split("/").pop(),
       entries: enriched,
       railIds: [...used].sort(),
+      entryCount: entries.length,
+      skippedCount,
     });
   }
 
