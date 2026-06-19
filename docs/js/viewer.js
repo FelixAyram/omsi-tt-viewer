@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=27";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=27";
+import { APP_VERSION } from "./version.js?v=28";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=28";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=27";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=27";
-import { distPointPolyline } from "./geometry.js?v=27";
+} from "./omsi_browser.js?v=28";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=28";
+import { distPointPolyline } from "./geometry.js?v=28";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=27";
+} from "./debug.js?v=28";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -718,7 +718,9 @@ canvas.addEventListener("pointermove", (ev) => {
   if (!dragging) return;
   const dx = ev.clientX - lastPointer.x;
   const dy = ev.clientY - lastPointer.y;
-  view.offsetX -= dx / view.scale;
+  // Con espejo X, screenToWorld invierte el eje horizontal respecto al pan estándar.
+  const panX = VIEW_MIRROR_X ? dx / view.scale : -dx / view.scale;
+  view.offsetX += panX;
   view.offsetY -= dy / view.scale;
   lastPointer = { x: ev.clientX, y: ev.clientY };
   draw();
