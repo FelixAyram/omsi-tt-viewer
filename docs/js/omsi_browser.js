@@ -128,13 +128,139 @@ async function getDirHandle(rootHandle, relPath) {
   return navigateFromRoot(rootHandle, relPath);
 }
 
-async function walkDirectoryToMap(dirHandle, prefix, fileMap) {
-  for await (const [name, handle] of dirHandle.entries()) {
-    const rel = prefix ? `${prefix}/${name}` : name;
-    if (handle.kind === "file") {
-      fileMap.set(rel.replace(/\\/g, "/"), await handle.getFile());
-    } else if (handle.kind === "directory") {
-      await walkDirectoryToMap(handle, rel, fileMap);
+async function readFileFromHandle(dirHandle, fileName) {
+  const fh = await getFileHandleInsensitive(dirHandle, fileName);
+  return fh.getFile();
+}
+
+export async function resolveMapBasePath(rootHandle, mapRelDir) {
+  const folder = normPath(mapRelDir).split("/").pop();
+  const mapsDir = await getChildDirHandle(rootHandle, "maps", "Maps");
+  if (!mapsDir) throw new Error("No se encontró maps/ en OMSI 2.");
+  const mapDirHandle = await getChildDirHandle(mapsDir, folder);
+  if (!mapDirHandle) throw new Error(`No se encontró la carpeta del mapa: ${folder}`);
+  return `${mapsDir.name}/${folder}`;
+}
+
+function canonicalMapPrefix(mapRelDir) {
+  const folder = normPath(mapRelDir).split("/").pop();
+  return `maps/${folder}`;
+}
+
+// Recorre el mapa leyendo cada archivo desde la raíz OMSI (evita fallos de entry.getFile()).
+async function collectDirFromRoot(rootHandle, diskPath, canonPrefix, fileMap) {
+  const dirHandle = await navigateFromRoot(rootHandle, diskPath);
+  const entries = [];
+  for await (const [name, entry] of dirHandle.entries()) {
+    entries.push({ name, kind: entry.kind });
+  }
+
+  for (const { name, kind } of entries) {
+    const diskChild = `${diskPath}/${name}`;
+    const canonChild = `${canonPrefix}/${name}`;
+
+    const looksLikeFile =
+      kind === "file" || /\.(map|cfg|ttr|txt|osn|prt|bmp|rdy)$/i.test(name) || /^global\.cfg$/i.test(name);
+
+    if (looksLikeFile) {
+      try {
+        const file = await readFileFromRoot(rootHandle, diskChild);
+        fileMap.set(normPath(canonChild), file);
+        continue;
+      } catch {
+        // puede ser subcarpeta mal tipada
+      }
+    }
+    if (kind === "directory" || !looksLikeFile) {
+      try {
+        await collectDirFromRoot(rootHandle, diskChild, canonChild, fileMap);
+      } catch {
+        // ignorar subcarpetas inaccesibles
+      }
+    }
+  }
+}
+
+async function collectMapTreeFromRoot(rootHandle, mapRelDir, fileMap) {
+  const basePath = await resolveMapBasePath(rootHandle, mapRelDir);
+  const canonPrefix = canonicalMapPrefix(mapRelDir);
+  await collectDirFromRoot(rootHandle, basePath, canonPrefix, fileMap);
+
+  // Asegurar global.cfg y tiles aunque entries() no liste archivos sueltos en la raíz
+  try {
+    const gf = await readFileFromRoot(rootHandle, `${basePath}/global.cfg`);
+    fileMap.set(`${canonPrefix}/global.cfg`, gf);
+  } catch {
+    // ya intentado en el árbol
+  }
+
+  const dirHandle = await navigateFromRoot(rootHandle, basePath);
+  for await (const [name, entry] of dirHandle.entries()) {
+    if (!/^tile_-?\d+_-?\d+\.map$/i.test(name)) continue;
+    const canon = `${canonPrefix}/${name}`;
+    if (fileMap.has(canon)) continue;
+    try {
+      const file = await readFileFromRoot(rootHandle, `${basePath}/${name}`);
+      fileMap.set(canon, file);
+    } catch {
+      if (entry.kind === "file") {
+        try {
+          fileMap.set(canon, await entry.getFile());
+        } catch {
+          // omitir tile
+        }
+      }
+    }
+  }
+}
+
+async function collectDirFromHandle(dirHandle, canonPrefix, fileMap) {
+  const entries = [];
+  for await (const [name, entry] of dirHandle.entries()) {
+    entries.push({ name, kind: entry.kind });
+  }
+
+  for (const { name, kind } of entries) {
+    const canonChild = `${canonPrefix}/${name}`;
+    const tryFile = kind === "file" || /\.(map|cfg|ttr|txt|osn)$/i.test(name) || /^global\.cfg$/i.test(name);
+
+    if (tryFile) {
+      try {
+        const file = await readFileFromHandle(dirHandle, name);
+        fileMap.set(normPath(canonChild), file);
+        continue;
+      } catch {
+        // intentar como carpeta
+      }
+    }
+    if (kind === "directory") {
+      try {
+        const sub = await dirHandle.getDirectoryHandle(name);
+        await collectDirFromHandle(sub, canonChild, fileMap);
+      } catch {
+        // omitir
+      }
+    }
+  }
+}
+
+async function collectMapTreeFromHandle(mapHandle, mapRelDir, fileMap) {
+  const canonPrefix = canonicalMapPrefix(mapRelDir);
+  await collectDirFromHandle(mapHandle, canonPrefix, fileMap);
+  try {
+    const gf = await readFileFromHandle(mapHandle, "global.cfg");
+    fileMap.set(`${canonPrefix}/global.cfg`, gf);
+  } catch {
+    // omitir
+  }
+  for await (const [name] of mapHandle.entries()) {
+    if (!/^tile_-?\d+_-?\d+\.map$/i.test(name)) continue;
+    const canon = `${canonPrefix}/${name}`;
+    if (fileMap.has(canon)) continue;
+    try {
+      fileMap.set(canon, await readFileFromHandle(mapHandle, name));
+    } catch {
+      // omitir
     }
   }
 }
@@ -226,12 +352,19 @@ export async function buildMapFileMapLazy(
   onProgress = null,
   mapHandleOverride = null,
 ) {
-  const mapDir = mapRelDir.replace(/\\/g, "/");
+  const mapDir = normPath(mapRelDir);
   const fileMap = new Map();
 
   onProgress?.("Cargando tiles y TTData del mapa…");
-  const mapHandle = mapHandleOverride ?? (await getDirHandle(rootHandle, mapDir));
-  await walkDirectoryToMap(mapHandle, mapDir, fileMap);
+  if (mapHandleOverride) {
+    await collectMapTreeFromHandle(mapHandleOverride, mapDir, fileMap);
+  } else {
+    await collectMapTreeFromRoot(rootHandle, mapDir, fileMap);
+  }
+
+  const tileCount = [...fileMap.keys()].filter((k) => /tile_-?\d+_-?\d+\.map$/i.test(k)).length;
+  const hasGlobal = [...fileMap.keys()].some((k) => /global\.cfg$/i.test(k));
+  onProgress?.(`Mapa: ${tileCount} tiles, global.cfg ${hasGlobal ? "OK" : "NO"}`);
 
   onProgress?.("Analizando .map → referencias .sli / .sco…");
   const { sliPaths, scoPaths } = await collectAssetRefs(fileMap, mapDir);
@@ -242,11 +375,18 @@ export async function buildMapFileMapLazy(
     i += 1;
     const name = rel.split("/").pop();
     onProgress?.(`Asset ${i}/${allAssets.length}: ${name}`);
+    const rl = normPath(rel);
+    if (fileMap.has(rl)) continue;
     try {
-      const file = await readFileFromRoot(rootHandle, rel);
-      fileMap.set(rel.replace(/\\/g, "/"), file);
+      const file = await readFileFromRoot(rootHandle, rl);
+      fileMap.set(rl, file);
     } catch {
-      // asset ausente en disco
+      try {
+        const file = await readFileFromRoot(rootHandle, rl.replace(/\//g, "\\"));
+        fileMap.set(rl, file);
+      } catch {
+        // asset ausente
+      }
     }
   }
 
@@ -280,18 +420,31 @@ export async function validateMapFolderHandle(mapHandle) {
   await ensureReadPermission(mapHandle);
   let hasGlobal = false;
   let hasTile = false;
+
   try {
-    await getFileHandleInsensitive(mapHandle, "global.cfg");
+    await readFileFromHandle(mapHandle, "global.cfg");
     hasGlobal = true;
   } catch {
-    // intentar vía entries
-  }
-  for await (const [name, handle] of mapHandle.entries()) {
-    if (handle.kind === "file") {
-      if (name.toLowerCase() === "global.cfg") hasGlobal = true;
-      if (/tile_-?\d+_-?\d+\.map$/i.test(name)) hasTile = true;
+    for await (const [name] of mapHandle.entries()) {
+      if (name.toLowerCase() === "global.cfg") {
+        try {
+          await readFileFromHandle(mapHandle, name);
+          hasGlobal = true;
+          break;
+        } catch {
+          // seguir
+        }
+      }
     }
   }
+
+  for await (const [name] of mapHandle.entries()) {
+    if (/tile_-?\d+_-?\d+\.map$/i.test(name)) {
+      hasTile = true;
+      break;
+    }
+  }
+
   if (!hasGlobal) {
     throw new Error("No hay global.cfg en la carpeta elegida.");
   }
@@ -301,8 +454,8 @@ export async function validateMapFolderHandle(mapHandle) {
   const folder = mapHandle.name;
   let label = folder;
   try {
-    const gf = await getFileHandleInsensitive(mapHandle, "global.cfg");
-    const cfgName = parseGlobalName(await (await gf.getFile()).text());
+    const gf = await readFileFromHandle(mapHandle, "global.cfg");
+    const cfgName = parseGlobalName(await gf.text());
     if (cfgName && cfgName.toLowerCase() !== folder.toLowerCase()) {
       label = `${folder} — ${cfgName}`;
     }

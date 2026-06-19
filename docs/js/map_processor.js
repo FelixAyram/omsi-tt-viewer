@@ -5,7 +5,7 @@ import {
   buildMapFileMapLazy,
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
-} from "./omsi_browser.js?v=8";
+} from "./omsi_browser.js?v=9";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -13,7 +13,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=8";
+} from "./geometry.js?v=9";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -105,10 +105,11 @@ export async function collectAssetRefsFromMapFiles(fileMap, mapDir) {
   const scoPaths = new Set();
   const prefix = mapDir.replace(/\\/g, "/");
   const pfx = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  const pfxLower = pfx.toLowerCase();
 
   for (const [path, file] of fileMap) {
-    const n = path.replace(/\\/g, "/");
-    if (!n.startsWith(pfx)) continue;
+    const n = normPath(path);
+    if (!n.toLowerCase().startsWith(pfxLower)) continue;
     if (!/tile_-?\d+_-?\d+\.map$/i.test(n)) continue;
 
     const text = await readText(file);
@@ -352,41 +353,47 @@ function resolveFile(index, relPath, omsiPrefix = "") {
 
 
 function resolveMapContext(files, mapDir) {
-  const prefix = resolveMapPrefixInFileMap(files, mapDir);
+  const folder = normPath(mapDir).split("/").pop();
+  const folderLower = folder.toLowerCase();
+  const mapPrefixRe = new RegExp(
+    `(^|/)maps/${folder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+    "i",
+  );
+
   const globalKey = [...files.keys()].find((k) => {
     const n = normPath(k);
-    return n.startsWith(prefix) && n.endsWith("global.cfg");
+    return mapPrefixRe.test(n) && /global\.cfg$/i.test(n);
   });
   const tileCount = [...files.keys()].filter((k) => {
     const n = normPath(k);
-    return n.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+    return mapPrefixRe.test(n) && /tile_-?\d+_-?\d+\.map$/i.test(n);
   }).length;
+
   if (globalKey && tileCount > 0) {
+    const globalNorm = normPath(globalKey);
+    const prefix = globalNorm.slice(0, globalNorm.length - "global.cfg".length);
     return { prefix, globalKey, globalFile: files.get(globalKey) };
   }
 
-  const base = normPath(mapDir).replace(/\/$/, "");
-  const shortName = base.split("/").pop() || base;
-  const prefixCandidates = [`${base}/`, `${shortName}/`, ""];
-
-  for (const candidate of prefixCandidates) {
-    const gKey = [...files.keys()].find((k) => {
-      const n = normPath(k);
-      if (candidate && !n.startsWith(candidate)) return false;
-      return n.endsWith("global.cfg");
-    });
-    const tiles = [...files.keys()].filter((k) => {
-      const n = normPath(k);
-      return (candidate ? n.startsWith(candidate) : true) && /tile_-?\d+_-?\d+\.map$/i.test(n);
-    }).length;
-    if (gKey && tiles > 0) {
-      const globalNorm = normPath(gKey);
-      const resolvedPrefix = globalNorm.slice(0, globalNorm.lastIndexOf("global.cfg"));
-      return { prefix: resolvedPrefix, globalKey: gKey, globalFile: files.get(gKey) };
-    }
+  const prefix = resolveMapPrefixInFileMap(files, mapDir);
+  const globalKey2 = [...files.keys()].find((k) => {
+    const n = normPath(k);
+    return n.startsWith(prefix) && /global\.cfg$/i.test(n);
+  });
+  const tileCount2 = [...files.keys()].filter((k) => {
+    const n = normPath(k);
+    return n.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+  }).length;
+  if (globalKey2 && tileCount2 > 0) {
+    return { prefix, globalKey: globalKey2, globalFile: files.get(globalKey2) };
   }
 
-  throw new Error("No se encontró global.cfg con tiles en la carpeta del mapa.");
+  const keysSample = [...files.keys()].slice(0, 15).join("\n  ");
+  throw new Error(
+    `No se encontró global.cfg con tiles en ${mapDir}. ` +
+      `Archivos en memoria: ${files.size}. ` +
+      (keysSample ? `Muestra:\n  ${keysSample}` : "fileMap vacío."),
+  );
 }
 
 function findMaps(files) {
@@ -515,8 +522,8 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   const mapName = parseGlobalName(globalText) || mapDir.split("/").pop();
 
   const tileFiles = [...fileMap.keys()].filter((p) => {
-    const n = p.replace(/\\/g, "/");
-    return n.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+    const n = normPath(p);
+    return n.toLowerCase().startsWith(prefix.toLowerCase()) && /tile_-?\d+_-?\d+\.map$/i.test(n);
   });
   if (!tileFiles.length) throw new Error("No hay tiles tile_*.map en la carpeta.");
 

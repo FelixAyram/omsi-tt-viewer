@@ -1,12 +1,12 @@
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=8";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=9";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=8";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=8";
-import { distPointPolyline } from "./geometry.js?v=8";
+} from "./omsi_browser.js?v=9";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=9";
+import { distPointPolyline } from "./geometry.js?v=9";
 import {
   initDebugPanel,
   debugClear,
@@ -16,7 +16,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=8";
+} from "./debug.js?v=9";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
