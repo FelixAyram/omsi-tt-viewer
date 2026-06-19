@@ -1,14 +1,25 @@
 import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js";
+import { distPointPolyline } from "./geometry.js";
+import {
+  loadFilesFromInput,
+  listMapsInFiles,
+  processMapFolder,
+  detectOmsiPrefix,
+} from "./map_processor.js";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
 const mapSelect = document.getElementById("mapSelect");
 const routeList = document.getElementById("routeList");
 const fileInput = document.getElementById("fileInput");
+const folderInput = document.getElementById("folderInput");
+const localMapSelect = document.getElementById("localMapSelect");
+const loadLocalMapBtn = document.getElementById("loadLocalMapBtn");
 const showAllRails = document.getElementById("showAllRails");
 const showFreeOnly = document.getElementById("showFreeOnly");
 const showBusstops = document.getElementById("showBusstops");
 const statsEl = document.getElementById("stats");
+const progressEl = document.getElementById("progress");
 const infoEl = document.getElementById("infoPanel");
 const legendEl = document.getElementById("legend");
 const resetViewBtn = document.getElementById("resetView");
@@ -19,6 +30,13 @@ let dragging = false;
 let lastPointer = { x: 0, y: 0 };
 let selectedRailId = null;
 let selectedRoutes = new Set();
+let pendingFileMap = null;
+
+function railPoints(rail) {
+  if (rail.points?.length >= 2) return rail.points;
+  if (rail.start && rail.end) return [rail.start, rail.end];
+  return [];
+}
 
 function resizeCanvas() {
   const wrap = canvas.parentElement;
@@ -78,18 +96,6 @@ function buildRouteRailMap() {
   return map;
 }
 
-function distPointSegment(px, pz, x1, z1, x2, z2) {
-  const dx = x2 - x1;
-  const dz = z2 - z1;
-  const len2 = dx * dx + dz * dz;
-  if (len2 < 1e-9) return Math.hypot(px - x1, pz - z1);
-  let t = ((px - x1) * dx + (pz - z1) * dz) / len2;
-  t = Math.max(0, Math.min(1, t));
-  const qx = x1 + t * dx;
-  const qz = z1 + t * dz;
-  return Math.hypot(px - qx, pz - qz);
-}
-
 function findRailAt(sx, sy, threshold = 8) {
   if (!data?.rails) return null;
   const { x, z } = screenToWorld(sx, sy);
@@ -97,13 +103,27 @@ function findRailAt(sx, sy, threshold = 8) {
   let best = null;
   let bestD = worldThreshold;
   for (const rail of data.rails) {
-    const d = distPointSegment(x, z, rail.start[0], rail.start[2], rail.end[0], rail.end[2]);
+    const pts = railPoints(rail);
+    if (pts.length < 2) continue;
+    const d = distPointPolyline(x, z, pts);
     if (d < bestD) {
       bestD = d;
       best = rail;
     }
   }
   return best;
+}
+
+function strokeRail(points, style) {
+  if (points.length < 2) return;
+  ctx.beginPath();
+  const first = worldToScreen(points[0][0], points[0][2]);
+  ctx.moveTo(first.x, first.y);
+  for (let i = 1; i < points.length; i += 1) {
+    const p = worldToScreen(points[i][0], points[i][2]);
+    ctx.lineTo(p.x, p.y);
+  }
+  ctx.stroke();
 }
 
 function draw() {
@@ -118,7 +138,7 @@ function draw() {
     ctx.fillStyle = "#8b95a8";
     ctx.font = "15px Segoe UI, system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Elige un mapa o sube un JSON exportado", w / 2, h / 2);
+    ctx.fillText("Elige un mapa, sube JSON o abre carpeta OMSI", w / 2, h / 2);
     return;
   }
 
@@ -126,16 +146,17 @@ function draw() {
   const showAll = showAllRails.checked;
   const freeOnly = showFreeOnly.checked;
 
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+
   for (const rail of data.rails) {
     const routeColors = routeRails.get(rail.id);
     const onRoute = routeColors && routeColors.length > 0;
+    const pts = railPoints(rail);
 
     if (freeOnly && !rail.freeStart) continue;
     if (!showAll && !onRoute && !freeOnly) continue;
     if (!showAll && freeOnly && !rail.freeStart && !onRoute) continue;
-
-    const a = worldToScreen(rail.start[0], rail.start[2]);
-    const b = worldToScreen(rail.end[0], rail.end[2]);
 
     if (onRoute) {
       ctx.lineWidth = Math.max(4, 3 * view.scale * 0.08);
@@ -159,10 +180,7 @@ function draw() {
       ctx.strokeStyle = SELECTED.stroke;
     }
 
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    strokeRail(pts, null);
     ctx.shadowBlur = 0;
   }
 
@@ -199,10 +217,15 @@ function updateInfo(rail) {
     return;
   }
   const typLabel = (RAIL_TYP[rail.typ] || RAIL_TYP[0]).label;
+  const radiusText =
+    rail.radius && Math.abs(rail.radius) > 1e-6
+      ? `${Math.abs(rail.radius).toFixed(2)} m`
+      : "recto";
   infoEl.innerHTML = `
     <strong>${rail.id}</strong><br/>
     Tipo: ${typLabel}<br/>
     Longitud: ${rail.length} m<br/>
+    Radio: ${radiusText}<br/>
     Tile: ${rail.tile || "—"}<br/>
     Inicio libre: ${rail.freeStart ? "sí" : "no"}<br/>
     Vehículo: ${rail.vehicle ? "sí" : "no"}
@@ -269,7 +292,12 @@ async function applyData(json) {
   updateStats();
   populateRoutes();
   updateInfo(null);
+  progressEl.textContent = "";
   draw();
+}
+
+function setProgress(msg) {
+  progressEl.textContent = msg;
 }
 
 mapSelect.addEventListener("change", async () => {
@@ -289,9 +317,54 @@ fileInput.addEventListener("change", async (ev) => {
     const text = await file.text();
     await applyData(JSON.parse(text));
     mapSelect.value = "";
+    localMapSelect.innerHTML = "";
   } catch {
     alert("JSON inválido");
   }
+});
+
+folderInput.addEventListener("change", async (ev) => {
+  const fileList = ev.target.files;
+  if (!fileList?.length) return;
+  try {
+    pendingFileMap = await loadFilesFromInput(fileList);
+    const maps = listMapsInFiles(pendingFileMap);
+    if (!maps.length) {
+      alert("No se encontró global.cfg. Selecciona la carpeta OMSI 2 o la carpeta del mapa.");
+      return;
+    }
+    localMapSelect.innerHTML = maps
+      .map((m) => `<option value="${m}">${m.split("/").pop() || m}</option>`)
+      .join("");
+    if (maps.length === 1) {
+      await loadLocalMap(maps[0]);
+    } else {
+      setProgress(`${maps.length} mapas detectados — elige uno y pulsa Cargar.`);
+    }
+    const omsi = detectOmsiPrefix(pendingFileMap);
+    if (!omsi && !pendingFileMap.has("Splines/") && ![...pendingFileMap.keys()].some((k) => k.includes("Splines/"))) {
+      setProgress("Aviso: no se ven Splines/Sceneryobjects — selecciona la carpeta raíz OMSI 2.");
+    }
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+});
+
+async function loadLocalMap(mapDir) {
+  if (!pendingFileMap) return;
+  try {
+    mapSelect.value = "";
+    const json = await processMapFolder(pendingFileMap, mapDir, setProgress);
+    await applyData(json);
+  } catch (err) {
+    alert(err.message || String(err));
+    setProgress("");
+  }
+}
+
+loadLocalMapBtn.addEventListener("click", () => {
+  const mapDir = localMapSelect.value;
+  if (mapDir) loadLocalMap(mapDir);
 });
 
 [showAllRails, showFreeOnly, showBusstops].forEach((el) => {

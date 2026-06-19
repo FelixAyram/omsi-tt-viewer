@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -24,6 +25,124 @@ def _default_sdk() -> str:
 
 def rail_key(kind: str, element_id: str, path_idx: str) -> str:
     return f"{kind}:{element_id}:{path_idx}"
+
+
+def _segment_count(length: float, radius: float) -> int:
+    length = max(length, 0.01)
+    if abs(radius) < 1e-6:
+        return min(64, max(2, math.ceil(length / 12)))
+    arc = length / abs(radius)
+    return min(96, max(8, math.ceil(arc / (math.pi / 20))))
+
+
+def _sample_spline_polyline(graph, sid: str, path_idx: int) -> list[list[float]]:
+    from movimiento_calle.path_graph import Point3, _dir_from_rotation, _parse_tile_coords, _tile_origin
+    from movimiento_calle.path_starts import _perp_offset
+    from movimiento_calle.spline_geometry import calculate_final_position_3d
+
+    info = graph.splines.get(str(sid))
+    if not info:
+        return []
+    meta = graph.spline_path_info(sid, str(path_idx))
+    lateral = meta.lateral_x if meta else 0.0
+    height = meta.height_z if meta else 0.0
+    coords = _parse_tile_coords(info.tile)
+    origin = _tile_origin(coords[0], coords[1], graph._min_tx, graph._min_ty) if coords else Point3(0, 0, 0)
+    n = _segment_count(info.largo, info.radius)
+    points: list[list[float]] = []
+    for i in range(n + 1):
+        dist = info.largo * i / n
+        xf, yf, zf, rot_f = calculate_final_position_3d(
+            info.x,
+            info.y,
+            info.rotation,
+            info.radius,
+            dist,
+            info.z,
+            is_spline_h=False,
+        )
+        direction = _dir_from_rotation(rot_f)
+        off = _perp_offset(direction, lateral)
+        wx = origin.x + xf + off.x
+        wz = origin.z + yf + off.z
+        wy = zf + height
+        points.append([wx, wy, wz])
+    return points
+
+
+def _sample_object_polyline(graph, oid: str, path_idx: int) -> list[list[float]]:
+    from movimiento_calle.path_graph import Point3, _parse_tile_coords, _resolve_sco_path, _rotate_y, _tile_origin
+    from movimiento_calle.spline_geometry import calculate_final_position_3d
+
+    obj = graph.objects.get(str(oid))
+    if not obj:
+        return []
+    path = obj.paths.get(path_idx)
+    if not path:
+        return []
+
+    sco_radius = 0.0
+    sco_angle = 0.0
+    sco_sx = path.start_local.x
+    sco_sy = path.start_local.z
+    sco_sz = path.start_local.y
+    sco_full = _resolve_sco_path(graph.omsi_root, obj.sco_rel)
+    if sco_full:
+        try:
+            with open(sco_full, encoding="latin-1", errors="replace") as handle:
+                lines = [line.rstrip("\r\n") for line in handle]
+        except OSError:
+            lines = []
+        pnum = 0
+        idx = 0
+        while idx < len(lines):
+            tag = lines[idx].strip().lower()
+            if tag not in ("[path]", "[path_2]"):
+                idx += 1
+                continue
+            vals = []
+            j = idx + 1
+            while j < len(lines):
+                text = lines[j].strip()
+                if not text:
+                    j += 1
+                    continue
+                if text.startswith("["):
+                    break
+                try:
+                    vals.append(float(text.replace(",", ".")))
+                except ValueError:
+                    break
+                j += 1
+            if len(vals) >= 6:
+                pnum += 1
+                if pnum == path_idx:
+                    sco_sx, sco_sy, sco_sz = vals[0], vals[2], vals[1]
+                    sco_angle = vals[3]
+                    sco_radius = vals[4]
+                    break
+            idx = j
+
+    coords = _parse_tile_coords(obj.tile)
+    origin = _tile_origin(coords[0], coords[1], graph._min_tx, graph._min_ty) if coords else Point3(0, 0, 0)
+    n = _segment_count(path.length, sco_radius)
+    points: list[list[float]] = []
+    for i in range(n + 1):
+        dist = path.length * i / n
+        xf, yf, zf, _ = calculate_final_position_3d(
+            sco_sx,
+            sco_sy,
+            sco_angle,
+            sco_radius,
+            dist,
+            sco_sz,
+        )
+        p = _rotate_y(Point3(xf, zf, yf), obj.rotation)
+        wx = origin.x + obj.x + p.x
+        wz = origin.z + obj.y + p.z
+        wy = obj.z + p.y
+        points.append([wx, wy, wz])
+    return points
 
 
 def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
@@ -60,8 +179,25 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
 
     for rail in rails_raw:
         key = rail_key(rail.kind, rail.element_id, rail.path_idx)
-        _expand(rail.start)
-        _expand(rail.end)
+        try:
+            pidx = int(rail.path_idx)
+        except ValueError:
+            pidx = 0
+        if rail.kind == "spline":
+            points = _sample_spline_polyline(graph, rail.element_id, pidx)
+        else:
+            points = _sample_object_polyline(graph, rail.element_id, pidx)
+        if not points:
+            points = [
+                [rail.start.x, rail.start.y, rail.start.z],
+                [rail.end.x, rail.end.y, rail.end.z],
+            ]
+        for pt in points:
+            _expand(type("P", (), {"x": pt[0], "z": pt[2]})())
+        radius = 0.0
+        if rail.kind == "spline":
+            sp = graph.splines.get(rail.element_id)
+            radius = sp.radius if sp else 0.0
         rails.append(
             {
                 "id": key,
@@ -72,9 +208,11 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
                 "vehicle": rail.is_vehicle,
                 "direction": rail.direction,
                 "tile": rail.tile,
-                "start": [rail.start.x, rail.start.y, rail.start.z],
-                "end": [rail.end.x, rail.end.y, rail.end.z],
+                "points": points,
+                "start": points[0],
+                "end": points[-1],
                 "length": round(rail.length, 3),
+                "radius": radius,
                 "freeStart": key in free_ids,
             }
         )
@@ -161,7 +299,7 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
         min_x = max_x = min_z = max_z = 0.0
 
     payload = {
-        "version": 1,
+        "version": 2,
         "mapName": os.path.basename(map_dir.rstrip("\\/")),
         "bounds": {
             "minX": min_x,

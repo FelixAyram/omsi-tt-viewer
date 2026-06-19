@@ -18,11 +18,19 @@
       <aside class="sidebar">
         <section class="panel">
           <h2>Mapa</h2>
-          <select id="mapSelect" aria-label="Mapa-group precargado"></select>
+          <select id="mapSelect" aria-label="Mapa precargado"></select>
           <label class="file-upload">
-            <span>Subir JSON exportado</span>
+            <span>Abrir carpeta OMSI / mapa</span>
+            <input type="file" id="folderInput" webkitdirectory directory multiple />
+          </label>
+          <p class="hint-small">Incluye global.cfg, tiles, TTData y (desde raíz OMSI 2) Splines + Sceneryobjects</p>
+          <select id="localMapSelect" class="local-map-select" aria-label="Mapa local detectado"></select>
+          <button type="button" id="loadLocalMapBtn" class="btn-secondary">Cargar mapa seleccionado</button>
+          <label class="file-upload secondary">
+            <span>O subir JSON exportado</span>
             <input type="file" id="fileInput" accept=".json,application/json" />
           </label>
+          <p id="progress" class="progress"></p>
           <p id="stats" class="stats"></p>
         </section>
 

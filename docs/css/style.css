@@ -110,6 +110,30 @@ select, .btn-secondary {
   color: var(--muted);
 }
 
+.progress {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--accent);
+  min-height: 1.1em;
+}
+
+.hint-small {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin: 4px 0 8px;
+  line-height: 1.35;
+}
+
+.local-map-select {
+  margin-top: 6px;
+}
+
+.file-upload.secondary {
+  margin-top: 10px;
+  border-style: solid;
+  border-color: var(--border);
+}
+
 .check {
   display: flex;
   align-items: center;
