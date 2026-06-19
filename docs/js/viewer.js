@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=29";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=29";
+import { APP_VERSION } from "./version.js?v=30";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=30";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=29";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=29";
-import { distPointPolyline } from "./geometry.js?v=29";
+} from "./omsi_browser.js?v=30";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=30";
+import { distPointPolyline } from "./geometry.js?v=30";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=29";
+} from "./debug.js?v=30";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {

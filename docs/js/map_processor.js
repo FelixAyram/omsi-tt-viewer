@@ -6,24 +6,34 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=29";
-import { readOmsiText } from "./omsi_text.js?v=29";
+} from "./omsi_browser.js?v=30";
+import { readOmsiText } from "./omsi_text.js?v=30";
 import {
   sampleSplineRail,
-  sampleScoRail,
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=29";
+} from "./geometry.js?v=30";
+import { runInParallel } from "./parallel.js?v=30";
+import {
+  VEHICLE_TYP,
+  PATH_DIR_FORWARD,
+  PATH_DIR_REVERSE,
+  PATH_DIR_BOTH,
+  railKey,
+  parseSliPaths,
+  parseScoPaths,
+  buildSplineRails,
+  buildScoRails,
+  mergeBounds,
+} from "./rail_builder.js?v=30";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=30";
 
 const TILE_SIZE = 300;
-const VEHICLE_TYP = 0;
 const CONNECT_TOL = 0.1;
-/** OMSI [path] direction: 0=adelante, 1=atrás, 2=doble (OmsiPathRules.cs). */
-const PATH_DIR_FORWARD = 0;
-const PATH_DIR_REVERSE = 1;
-const PATH_DIR_BOTH = 2;
+const IO_CONCURRENCY = 16;
+const RAIL_BATCH_SIZE = 50;
 const MAP_GLOBAL_RE = /(?:^|\/)maps\/([^/]+)\/global\.cfg$/i;
 
 function normPath(path) {
@@ -105,6 +115,28 @@ function isSplinePath(line) {
   return /\.sli$/i.test(line) && /Splines/i.test(line);
 }
 
+function scanTileAssetRefs(text) {
+  const sliPaths = new Set();
+  const scoPaths = new Set();
+  const lines = text.split(/\r?\n/);
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const tag = lines[idx].trim();
+    if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
+      const sliPath = lines[idx + 2]?.trim() ?? "";
+      if (isSplinePath(sliPath)) sliPaths.add(sliPath.replace(/\\/g, "/"));
+    }
+    if (tag === "[object]" && lines[idx + 1]?.trim() === "0") {
+      const sco = lines[idx + 2]?.trim() ?? "";
+      if (sco.toLowerCase().endsWith(".sco")) scoPaths.add(sco.replace(/\\/g, "/"));
+    }
+    if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
+      const rel = lines[idx + 2]?.trim() ?? "";
+      if (rel.toLowerCase().includes("bus_stop")) scoPaths.add(rel.replace(/\\/g, "/"));
+    }
+  }
+  return { sliPaths, scoPaths };
+}
+
 /** Tras cargar tiles del mapa, detecta .sli y .sco referenciados. */
 export async function collectAssetRefsFromMapFiles(fileMap, mapDir) {
   const sliPaths = new Set();
@@ -113,28 +145,21 @@ export async function collectAssetRefsFromMapFiles(fileMap, mapDir) {
   const pfx = prefix.endsWith("/") ? prefix : `${prefix}/`;
   const pfxLower = pfx.toLowerCase();
 
-  for (const [path, file] of fileMap) {
+  const tileEntries = [...fileMap.entries()].filter(([path]) => {
     const n = normPath(path);
-    if (!n.toLowerCase().startsWith(pfxLower)) continue;
-    if (!/tile_-?\d+_-?\d+\.map$/i.test(n)) continue;
+    return n.toLowerCase().startsWith(pfxLower) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+  });
 
-    const text = await readText(file);
-    const lines = text.split(/\r?\n/);
-    for (let idx = 0; idx < lines.length; idx += 1) {
-      const tag = lines[idx].trim();
-      if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
-        const sliPath = lines[idx + 2]?.trim() ?? "";
-        if (isSplinePath(sliPath)) sliPaths.add(sliPath.replace(/\\/g, "/"));
-      }
-      if (tag === "[object]" && lines[idx + 1]?.trim() === "0") {
-        const sco = lines[idx + 2]?.trim() ?? "";
-        if (sco.toLowerCase().endsWith(".sco")) scoPaths.add(sco.replace(/\\/g, "/"));
-      }
-      if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
-        const rel = lines[idx + 2]?.trim() ?? "";
-        if (rel.toLowerCase().includes("bus_stop")) scoPaths.add(rel.replace(/\\/g, "/"));
-      }
-    }
+  const texts = await runInParallel(
+    tileEntries,
+    async ([, file]) => readText(file),
+    IO_CONCURRENCY,
+  );
+
+  for (const text of texts) {
+    const refs = scanTileAssetRefs(text);
+    for (const p of refs.sliPaths) sliPaths.add(p);
+    for (const p of refs.scoPaths) scoPaths.add(p);
   }
 
   return { sliPaths, scoPaths };
@@ -186,96 +211,6 @@ function parseSplineBlock(lines, i, isSplineH = false) {
     isMirrored,
     endIdx: j,
   };
-}
-
-/** OmsiPathRules.MirrorAdjustedTravelDirection — invierte sentido en splines mirror. */
-function mirrorAdjustedDirection(direction, isMirrored) {
-  if (!isMirrored) return direction ?? PATH_DIR_FORWARD;
-  const dir = direction ?? PATH_DIR_FORWARD;
-  if (dir === PATH_DIR_FORWARD) return PATH_DIR_REVERSE;
-  if (dir === PATH_DIR_REVERSE) return PATH_DIR_FORWARD;
-  return PATH_DIR_BOTH;
-}
-
-function parseSliPaths(text) {
-  const lines = text.split(/\r?\n/);
-  const out = new Map();
-  let idx = 0;
-  let pathIndex = 0;
-  while (idx < lines.length) {
-    if (lines[idx].trim().toLowerCase() !== "[path]") {
-      idx += 1;
-      continue;
-    }
-    const vals = [];
-    let j = idx + 1;
-    while (j < lines.length) {
-      const t = lines[j].trim();
-      if (!t) {
-        j += 1;
-        continue;
-      }
-      if (t.startsWith("[")) break;
-      vals.push(t);
-      j += 1;
-    }
-    if (vals.length >= 5) {
-      out.set(pathIndex, {
-        typ: parseInt(vals[0], 10) || 0,
-        lateral: parseFloat(vals[1].replace(",", ".")) || 0,
-        height: parseFloat(vals[2].replace(",", ".")) || 0,
-        direction: parseInt(vals[4], 10) || 0,
-      });
-      pathIndex += 1;
-    }
-    idx = j;
-  }
-  return out;
-}
-
-function parseScoPaths(text) {
-  const lines = text.split(/\r?\n/);
-  const out = new Map();
-  let pathIndex = 0;
-  let idx = 0;
-  while (idx < lines.length) {
-    const tag = lines[idx].trim().toLowerCase();
-    if (tag !== "[path]" && tag !== "[path_2]") {
-      idx += 1;
-      continue;
-    }
-    const vals = [];
-    let j = idx + 1;
-    while (j < lines.length) {
-      const t = lines[j].trim();
-      if (!t) {
-        j += 1;
-        continue;
-      }
-      if (t.startsWith("[")) break;
-      const n = parseFloat(t.replace(",", "."));
-      if (Number.isFinite(n)) vals.push(n);
-      else break;
-      j += 1;
-    }
-    if (vals.length >= 6) {
-      out.set(pathIndex, {
-        sx: vals[0],
-        sy: vals[1],
-        sz: vals[2],
-        angle: vals[3],
-        radius: vals[4],
-        length: Math.abs(vals[5]) || 0.01,
-        gradStart: vals[6] ?? 0,
-        gradEnd: vals[7] ?? 0,
-        typ: vals.length > 8 ? (vals[8] | 0) : VEHICLE_TYP,
-        direction: vals.length > 10 ? (vals[10] | 0) : PATH_DIR_FORWARD,
-      });
-      pathIndex += 1;
-    }
-    idx = j;
-  }
-  return out;
 }
 
 function isIntegerField(value) {
@@ -420,10 +355,6 @@ function parseTtpLabel(text) {
   }
   if (linie && target) return `${linie} → ${target}`;
   return linie || target || "";
-}
-
-function railKey(kind, elementId, pathIdx) {
-  return `${kind}:${elementId}:${pathIdx}`;
 }
 
 /** Índice de rutas con variantes (mayúsculas, sufijos, carpetas parciales). */
@@ -860,12 +791,248 @@ function busstopWorld(graph, stop, splines, splineOrderByTile) {
   return { x: tileOriginPt.x + stop.x, y: stop.z + (stop.heightOff || 0), z: tileOriginPt.z + stop.y };
 }
 
+function ingestTileMap(text, tileName, minTx, minTy, splines, objects, busstops, splineOrderByTile) {
+  const lines = text.split(/\r?\n/);
+  const coords = parseTileCoords(tileName);
+  const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
+  const splineOrder = [];
+
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const tag = lines[idx].trim();
+    if (tag === "[object]" && lines[idx + 1]?.trim() === "0") {
+      const rel = lines[idx + 2]?.trim() ?? "";
+      const oid = lines[idx + 3]?.trim() ?? "";
+      if (oid && rel.toLowerCase().endsWith(".sco")) {
+        objects.set(oid, {
+          id: oid,
+          scoRel: rel,
+          tile: tileName,
+          x: safeFloat(lines[idx + 4]),
+          y: safeFloat(lines[idx + 5]),
+          z: safeFloat(lines[idx + 6]),
+          rotation: safeFloat(lines[idx + 7]),
+          paths: null,
+        });
+      }
+      idx += 1;
+      continue;
+    }
+
+    if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
+      const rel = lines[idx + 2]?.trim() ?? "";
+      const oid = lines[idx + 3]?.trim() ?? "";
+      if (oid && rel.toLowerCase().includes("bus_stop")) {
+        const splineListIndex = parseInt(lines[idx + 4]?.trim() ?? "0", 10) || 0;
+        const name = parseAttachmentName(lines, idx + 9);
+        busstops.push({
+          id: oid,
+          name: name || `Parada ${oid}`,
+          tile: tileName,
+          splineListIndex,
+          lateral: safeFloat(lines[idx + 5]),
+          heightOff: safeFloat(lines[idx + 6]),
+          distAlong: safeFloat(lines[idx + 7]),
+          rotation: safeFloat(lines[idx + 8]),
+        });
+      }
+      idx += 1;
+      continue;
+    }
+
+    if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
+      const block = parseSplineBlock(lines, idx + 1, tag === "[spline_h]");
+      if (block) {
+        splineOrder.push(block.id);
+        splines.set(block.id, {
+          ...block,
+          tile: tileName,
+          origin,
+          isSplineH: tag === "[spline_h]",
+          isInvis: block.path.toLowerCase().includes("invis"),
+        });
+      }
+    }
+  }
+  splineOrderByTile.set(tileName, splineOrder);
+}
+
+const DEFAULT_SLI_PATHS = new Map([
+  [0, { typ: 0, lateral: 0, height: 0, direction: PATH_DIR_BOTH }],
+]);
+
+async function loadSliCache(splines, index, omsiPrefix, pool) {
+  const sliCache = new Map();
+  let sliFound = 0;
+  let sliMissing = 0;
+  const unique = new Map();
+  for (const sp of splines.values()) {
+    const key = sp.path.replace(/\\/g, "/").toLowerCase();
+    if (!unique.has(key)) unique.set(key, sp.path);
+  }
+
+  const readResults = await runInParallel(
+    [...unique.entries()],
+    async ([key, relPath]) => {
+      const file = resolveFile(index, relPath, omsiPrefix);
+      if (!file) return { key, missing: true };
+      return { key, text: await readText(file) };
+    },
+    IO_CONCURRENCY,
+  );
+
+  const toParse = [];
+  for (const r of readResults) {
+    if (r.missing) {
+      sliCache.set(r.key, new Map(DEFAULT_SLI_PATHS));
+      sliMissing += 1;
+    } else {
+      toParse.push(r);
+      sliFound += 1;
+    }
+  }
+
+  if (pool && toParse.length) {
+    try {
+      const parsed = await pool.runAll(
+        toParse.map((r) => ({ type: "parseSli", key: r.key, text: r.text })),
+      );
+      for (const p of parsed) {
+        sliCache.set(p.key, new Map(p.pathsEntries));
+      }
+    } catch {
+      for (const r of toParse) sliCache.set(r.key, parseSliPaths(r.text));
+    }
+  } else {
+    for (const r of toParse) sliCache.set(r.key, parseSliPaths(r.text));
+  }
+
+  return { sliCache, sliFound, sliMissing };
+}
+
+async function loadScoCache(objects, index, omsiPrefix, pool) {
+  const scoCache = new Map();
+  let scoFound = 0;
+  let scoMissing = 0;
+  const scoNeeded = new Map();
+  for (const obj of objects.values()) {
+    const key = obj.scoRel.replace(/\\/g, "/").toLowerCase();
+    if (!scoNeeded.has(key)) scoNeeded.set(key, obj.scoRel);
+  }
+
+  const readResults = await runInParallel(
+    [...scoNeeded.entries()],
+    async ([key, rel]) => {
+      const file = resolveFile(index, rel, omsiPrefix);
+      if (!file) return { key, missing: true };
+      return { key, text: await readText(file) };
+    },
+    IO_CONCURRENCY,
+  );
+
+  const toParse = [];
+  for (const r of readResults) {
+    if (r.missing) {
+      scoCache.set(r.key, new Map());
+      scoMissing += 1;
+    } else {
+      toParse.push(r);
+      scoFound += 1;
+    }
+  }
+
+  if (pool && toParse.length) {
+    try {
+      const parsed = await pool.runAll(
+        toParse.map((r) => ({ type: "parseSco", key: r.key, text: r.text })),
+      );
+      for (const p of parsed) {
+        scoCache.set(p.key, new Map(p.pathsEntries));
+      }
+    } catch {
+      for (const r of toParse) scoCache.set(r.key, parseScoPaths(r.text));
+    }
+  } else {
+    for (const r of toParse) scoCache.set(r.key, parseScoPaths(r.text));
+  }
+
+  return { scoCache, scoFound, scoMissing };
+}
+
+function collectRailWorkItems(splines, objects, sliCache, minTx, minTy) {
+  const splineItems = [];
+  for (const sp of splines.values()) {
+    if (sp.isInvis) continue;
+    const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
+    const paths = sliCache.get(sliKey) || DEFAULT_SLI_PATHS;
+    splineItems.push({ sp, pathsEntries: [...paths.entries()] });
+  }
+
+  const objectItems = [];
+  for (const obj of objects.values()) {
+    if (!obj.paths?.size) continue;
+    const coords = parseTileCoords(obj.tile);
+    const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
+    objectItems.push({ obj, origin, pathsEntries: [...obj.paths.entries()] });
+  }
+  return { splineItems, objectItems };
+}
+
+async function generateRails(splines, objects, sliCache, minTx, minTy, pool) {
+  const { splineItems, objectItems } = collectRailWorkItems(splines, objects, sliCache, minTx, minTy);
+  const tasks = [];
+  for (let i = 0; i < splineItems.length; i += RAIL_BATCH_SIZE) {
+    tasks.push({ type: "spline", items: splineItems.slice(i, i + RAIL_BATCH_SIZE) });
+  }
+  for (let i = 0; i < objectItems.length; i += RAIL_BATCH_SIZE) {
+    tasks.push({ type: "sco", items: objectItems.slice(i, i + RAIL_BATCH_SIZE) });
+  }
+
+  let parallelWorkers = 0;
+  let rails = [];
+  const bounds = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+
+  const buildSequential = () => {
+    const splineResult = buildSplineRails(splineItems);
+    const scoResult = buildScoRails(objectItems);
+    rails = [...splineResult.rails, ...scoResult.rails];
+    mergeBounds(bounds, splineResult.bounds);
+    mergeBounds(bounds, scoResult.bounds);
+  };
+
+  if (pool && tasks.length) {
+    parallelWorkers = pool.size;
+    try {
+      const results = await pool.runAll(tasks);
+      for (const r of results) {
+        rails.push(...r.rails);
+        mergeBounds(bounds, r.bounds);
+      }
+    } catch {
+      parallelWorkers = 0;
+      buildSequential();
+    }
+  } else {
+    buildSequential();
+  }
+
+  return { rails, bounds, parallelWorkers };
+}
+
 /**
  * @param {Map<string, File>} fileMap path relativo → File
  * @param {string} mapDir prefijo carpeta mapa (ej. maps/Test_Lat30)
  * @param {(msg:string)=>void} onProgress
  */
 export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
+  const pool = createMapWorkerPool();
+  try {
+    return await processMapFolderInner(fileMap, mapDir, onProgress, pool);
+  } finally {
+    pool?.terminate();
+  }
+}
+
+async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   const ctx = resolveMapContext(fileMap, mapDir);
   const prefix = ctx.prefix;
   const omsiPrefix = detectOmsiPrefix(fileMap);
@@ -889,180 +1056,49 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   const objects = new Map();
   const busstops = [];
   const splineOrderByTile = new Map();
-  const sliCache = new Map();
-  const scoCache = new Map();
-  let sliFound = 0;
-  let sliMissing = 0;
-  let scoFound = 0;
-  let scoMissing = 0;
 
   onProgress(`Parseando ${tileFiles.length} tiles…`);
-  for (const tilePath of tileFiles) {
-    const tileName = tilePath.split("/").pop();
-    const text = await readText(fileMap.get(tilePath));
-    const lines = text.split(/\r?\n/);
-    const coords = parseTileCoords(tileName);
-    const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
-    const splineOrder = [];
-
-    for (let idx = 0; idx < lines.length; idx += 1) {
-      const tag = lines[idx].trim();
-      if (tag === "[object]" && lines[idx + 1]?.trim() === "0") {
-        const rel = lines[idx + 2]?.trim() ?? "";
-        const oid = lines[idx + 3]?.trim() ?? "";
-        if (oid && rel.toLowerCase().endsWith(".sco")) {
-          objects.set(oid, {
-            id: oid,
-            scoRel: rel,
-            tile: tileName,
-            x: safeFloat(lines[idx + 4]),
-            y: safeFloat(lines[idx + 5]),
-            z: safeFloat(lines[idx + 6]),
-            rotation: safeFloat(lines[idx + 7]),
-            paths: null,
-          });
-        }
-        idx += 1;
-        continue;
-      }
-
-      if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
-        const rel = lines[idx + 2]?.trim() ?? "";
-        const oid = lines[idx + 3]?.trim() ?? "";
-        if (oid && rel.toLowerCase().includes("bus_stop")) {
-          const splineListIndex = parseInt(lines[idx + 4]?.trim() ?? "0", 10) || 0;
-          const name = parseAttachmentName(lines, idx + 9);
-          busstops.push({
-            id: oid,
-            name: name || `Parada ${oid}`,
-            tile: tileName,
-            splineListIndex,
-            lateral: safeFloat(lines[idx + 5]),
-            heightOff: safeFloat(lines[idx + 6]),
-            distAlong: safeFloat(lines[idx + 7]),
-            rotation: safeFloat(lines[idx + 8]),
-          });
-        }
-        idx += 1;
-        continue;
-      }
-
-      if ((tag === "[spline]" || tag === "[spline_h]") && lines[idx + 1]?.trim() === "0") {
-        const block = parseSplineBlock(lines, idx + 1, tag === "[spline_h]");
-        if (block) {
-          splineOrder.push(block.id);
-          splines.set(block.id, {
-            ...block,
-            tile: tileName,
-            origin,
-            isSplineH: tag === "[spline_h]",
-            isInvis: block.path.toLowerCase().includes("invis"),
-          });
-        }
-      }
-    }
-    splineOrderByTile.set(tileName, splineOrder);
+  const tileTexts = await runInParallel(
+    tileFiles,
+    async (tilePath) => ({
+      tilePath,
+      text: await readText(fileMap.get(tilePath)),
+    }),
+    IO_CONCURRENCY,
+  );
+  for (const { tilePath, text } of tileTexts) {
+    ingestTileMap(
+      text,
+      tilePath.split("/").pop(),
+      minTx,
+      minTy,
+      splines,
+      objects,
+      busstops,
+      splineOrderByTile,
+    );
   }
 
   onProgress("Cargando paths .sli…");
-  for (const sp of splines.values()) {
-    const key = sp.path.replace(/\\/g, "/").toLowerCase();
-    if (sliCache.has(key)) continue;
-    const file = resolveFile(index, sp.path, omsiPrefix);
-    if (file) {
-      sliCache.set(key, parseSliPaths(await readText(file)));
-      sliFound += 1;
-    } else {
-      sliCache.set(key, new Map([[0, { typ: 0, lateral: 0, height: 0, direction: 2 }]]));
-      sliMissing += 1;
-    }
-  }
+  const { sliCache, sliFound, sliMissing } = await loadSliCache(splines, index, omsiPrefix, pool);
 
   onProgress("Cargando paths .sco…");
-  const scoNeeded = new Set();
-  for (const obj of objects.values()) scoNeeded.add(obj.scoRel.replace(/\\/g, "/").toLowerCase());
-
-  for (const relLower of scoNeeded) {
-    const rel = [...objects.values()].find((o) => o.scoRel.replace(/\\/g, "/").toLowerCase() === relLower)?.scoRel;
-    if (!rel) continue;
-    const key = rel.replace(/\\/g, "/").toLowerCase();
-    if (scoCache.has(key)) continue;
-    const file = resolveFile(index, rel, omsiPrefix);
-    if (file) {
-      scoCache.set(key, parseScoPaths(await readText(file)));
-      scoFound += 1;
-    } else {
-      scoCache.set(key, new Map());
-      scoMissing += 1;
-    }
-  }
+  const { scoCache, scoFound, scoMissing } = await loadScoCache(objects, index, omsiPrefix, pool);
 
   for (const obj of objects.values()) {
     const key = obj.scoRel.replace(/\\/g, "/").toLowerCase();
     obj.paths = scoCache.get(key) || new Map();
   }
 
-  onProgress("Generando rieles…");
-  const rails = [];
-  const bounds = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
-
-  for (const sp of splines.values()) {
-    if (sp.isInvis) continue;
-    const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
-    const paths = sliCache.get(sliKey) || new Map([[0, { typ: 0, lateral: 0, height: 0, direction: 2 }]]);
-    for (const [pidx, meta] of paths) {
-      const lateral = sp.isMirrored ? -meta.lateral : meta.lateral;
-      const points = sampleSplineRail(sp, sp.origin, {
-        lateral,
-        height: meta.height,
-      });
-      for (const p of points) expandBounds(bounds, p[0], p[2]);
-      rails.push({
-        id: railKey("spline", sp.id, String(pidx)),
-        kind: "spline",
-        elementId: sp.id,
-        pathIdx: String(pidx),
-        typ: meta.typ,
-        vehicle: meta.typ === VEHICLE_TYP,
-        direction: mirrorAdjustedDirection(meta.direction, sp.isMirrored),
-        isSplineH: sp.isSplineH ?? false,
-        isMirrored: sp.isMirrored ?? false,
-        tile: sp.tile,
-        points,
-        start: points[0],
-        end: points.at(-1),
-        length: sp.largo,
-        radius: sp.radius,
-        freeStart: false,
-      });
-    }
-  }
-
-  for (const obj of objects.values()) {
-    if (!obj.paths?.size) continue;
-    const coords = parseTileCoords(obj.tile);
-    const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
-    for (const [pidx, scoPath] of obj.paths) {
-      const points = sampleScoRail(obj, scoPath, origin);
-      for (const p of points) expandBounds(bounds, p[0], p[2]);
-      rails.push({
-        id: railKey("object", obj.id, String(pidx)),
-        kind: "object",
-        elementId: obj.id,
-        pathIdx: String(pidx),
-        typ: scoPath.typ,
-        vehicle: scoPath.typ === VEHICLE_TYP,
-        direction: scoPath.direction ?? PATH_DIR_FORWARD,
-        tile: obj.tile,
-        points,
-        start: points[0],
-        end: points.at(-1),
-        length: scoPath.length,
-        radius: scoPath.radius,
-        freeStart: false,
-      });
-    }
-  }
+  onProgress(pool ? `Generando rieles (${pool.size} workers)…` : "Generando rieles…");
+  const { rails, bounds, parallelWorkers } = await generateRails(
+    splines,
+    objects,
+    sliCache,
+    minTx,
+    minTy,
+    pool,
+  );
 
   const startCandidates = findFreeStartCandidates(rails);
   const omsiSpawn = findOmsiVehicleSpawnRails(rails, splines);
@@ -1112,52 +1148,73 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   onProgress("Rutas TTData…");
   const routes = [];
   const ttrLabels = new Map();
-  for (const [path, file] of fileMap) {
-    if (!path.replace(/\\/g, "/").startsWith(prefix) || !/\.ttp$/i.test(path)) continue;
-    const ttpText = await readText(file);
-    const ttpLines = ttpText.split(/\r?\n/);
-    let trackName = "";
-    let label = "";
-    for (let i = 0; i < ttpLines.length; i += 1) {
-      if (ttpLines[i].trim() === "[trip]" && i + 3 < ttpLines.length) {
-        trackName = ttpLines[i + 1].trim();
-        label = parseTtpLabel(ttpText);
-        break;
+  const ttpEntries = [...fileMap.entries()].filter(
+    ([path]) => normPath(path).startsWith(prefix) && /\.ttp$/i.test(path),
+  );
+  const ttpResults = await runInParallel(
+    ttpEntries,
+    async ([path, file]) => {
+      const ttpText = await readText(file);
+      const ttpLines = ttpText.split(/\r?\n/);
+      let trackName = "";
+      let label = "";
+      for (let i = 0; i < ttpLines.length; i += 1) {
+        if (ttpLines[i].trim() === "[trip]" && i + 3 < ttpLines.length) {
+          trackName = ttpLines[i + 1].trim();
+          label = parseTtpLabel(ttpText);
+          break;
+        }
       }
-    }
-    if (trackName) {
+      if (!trackName) return null;
       const ttrFile = trackName.toLowerCase().endsWith(".ttr") ? trackName : `${trackName}.ttr`;
       const ttrPath = `${path.replace(/[^/]+$/, ttrFile)}`.replace(/\\/g, "/");
-      ttrLabels.set(ttrPath, label || ttrFile);
-    }
+      return { ttrPath, label: label || ttrFile };
+    },
+    IO_CONCURRENCY,
+  );
+  for (const r of ttpResults) {
+    if (r) ttrLabels.set(r.ttrPath, r.label);
   }
 
+  const ttrEntries = [...fileMap.entries()].filter(
+    ([path]) => normPath(path).startsWith(prefix) && /\.ttr$/i.test(path),
+  );
   const seenTtr = new Set();
-  for (const [path, file] of fileMap) {
-    if (!path.replace(/\\/g, "/").startsWith(prefix) || !/\.ttr$/i.test(path)) continue;
-    const norm = path.replace(/\\/g, "/");
-    if (seenTtr.has(norm)) continue;
+  const uniqueTtr = ttrEntries.filter(([path]) => {
+    const norm = normPath(path);
+    if (seenTtr.has(norm)) return false;
     seenTtr.add(norm);
-    const entries = parseTtr(await readText(file));
-    const railsById = new Map(rails.map((r) => [r.id, r]));
-    const resolveCtx = { splines, objects, railsById, sliCache };
-    const used = new Set();
-    const enriched = entries.map((e) => {
-      const resolved = resolveTrackEntryRail(e, resolveCtx);
-      if (!resolved.skipped) used.add(resolved.railId);
-      return { ...e, ...resolved };
-    });
-    const skippedCount = enriched.filter((e) => e.skipped).length;
-    routes.push({
-      id: norm.slice(prefix.length),
-      file: norm.split("/").pop(),
-      label: ttrLabels.get(norm) || norm.split("/").pop(),
-      entries: enriched,
-      railIds: [...used].sort(),
-      entryCount: entries.length,
-      skippedCount,
-    });
-  }
+    return true;
+  });
+
+  const railsById = new Map(rails.map((r) => [r.id, r]));
+  const resolveCtx = { splines, objects, railsById, sliCache };
+
+  const ttrResults = await runInParallel(
+    uniqueTtr,
+    async ([path, file]) => {
+      const norm = normPath(path);
+      const entries = parseTtr(await readText(file));
+      const used = new Set();
+      const enriched = entries.map((e) => {
+        const resolved = resolveTrackEntryRail(e, resolveCtx);
+        if (!resolved.skipped) used.add(resolved.railId);
+        return { ...e, ...resolved };
+      });
+      const skippedCount = enriched.filter((e) => e.skipped).length;
+      return {
+        id: norm.slice(prefix.length),
+        file: norm.split("/").pop(),
+        label: ttrLabels.get(norm) || norm.split("/").pop(),
+        entries: enriched,
+        railIds: [...used].sort(),
+        entryCount: entries.length,
+        skippedCount,
+      };
+    },
+    IO_CONCURRENCY,
+  );
+  routes.push(...ttrResults);
 
   if (!Number.isFinite(bounds.minX)) {
     bounds.minX = bounds.maxX = bounds.minZ = bounds.maxZ = 0;
@@ -1195,6 +1252,8 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
       scoMissing,
       splineCount: splines.size,
       objectCount: objects.size,
+      parallelWorkers,
+      parallelPoolSize: defaultPoolSize(),
     },
     pathLegs,
   };
