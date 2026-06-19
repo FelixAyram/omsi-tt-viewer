@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=31";
-import { readOmsiText } from "./omsi_text.js?v=31";
+} from "./omsi_browser.js?v=32";
+import { readOmsiText } from "./omsi_text.js?v=32";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=31";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=31";
+} from "./geometry.js?v=32";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=32";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -26,8 +26,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=31";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=31";
+} from "./rail_builder.js?v=32";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=32";
 
 const TILE_SIZE = 300;
 const CONNECT_TOL = 0.1;
@@ -212,6 +212,14 @@ function parseSplineBlock(lines, i, isSplineH = false) {
   };
 }
 
+function pathTypName(typ) {
+  if (typ === 0) return "carretera (bus/coche)";
+  if (typ === 1) return "peatón";
+  if (typ === 2) return "tranvía/tren";
+  if (typ === 3) return "aeronave";
+  return `tipo ${typ}`;
+}
+
 function formatSkippedTrackEntry(entry) {
   const ref = `${entry.kind} ${entry.elementId} · path ${entry.originalPathIdx ?? entry.pathIdx}`;
   if (entry.skipReason === "missing") {
@@ -221,7 +229,8 @@ function formatSkippedTrackEntry(entry) {
   }
   if (entry.skipReason === "non-vehicle") {
     return (
-      `#${entry.index}: no es vehículo, typ=${entry.typ} (${ref}) — path peatón/decorativo; OMSI lo ignora en rutas`
+      `#${entry.index}: no es carretera, typ=${entry.typ} ${pathTypName(entry.typ)} (${ref}) — ` +
+      "las rutas .ttr de bus solo usan typ=0; OMSI lo ignora aquí"
     );
   }
   return `#${entry.index}: omitido (${ref})`;
