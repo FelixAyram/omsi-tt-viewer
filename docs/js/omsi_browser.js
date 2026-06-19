@@ -1,8 +1,6 @@
-/**
- * Acceso lazy a instalación OMSI 2:
- * 1) Validar raíz y listar solo global.cfg en maps/<nombre>/
- * 2) Al elegir mapa: cargar tiles/TTData + .sli/.sco referenciados
- */
+// Acceso lazy a instalación OMSI 2:
+// 1) Validar raíz y listar global.cfg en subcarpetas de maps/
+// 2) Al elegir mapa: cargar tiles, TTData y .sli/.sco referenciados
 
 function parseGlobalName(text) {
   const m = /\[name\]\s*\r?\n([^\r\n\[]+)/i.exec(text);
@@ -38,7 +36,7 @@ async function walkDirectoryToMap(dirHandle, prefix, fileMap) {
   }
 }
 
-/** Valida maps/, Splines/, Sceneryobjects/ sin leer todo el árbol. */
+// Valida maps/, Splines/, Sceneryobjects/ sin leer todo el árbol.
 export async function validateOmsiRootHandle(rootHandle) {
   const missing = [];
   for (const name of ["maps", "Splines", "Sceneryobjects"]) {
@@ -50,13 +48,14 @@ export async function validateOmsiRootHandle(rootHandle) {
   }
   if (missing.length) {
     throw new Error(
-      `No parece la carpeta raíz de OMSI 2. Falta: ${missing.join(", ")}. ` +
-        "Selecciona la carpeta donde está omsi.exe.",
+      "No parece la carpeta raíz de OMSI 2. Falta: " +
+        missing.join(", ") +
+        ". Selecciona la carpeta donde está omsi.exe.",
     );
   }
 }
 
-/** Solo escanea global.cfg en cada subcarpeta de maps/ (rápido). */
+// Solo escanea global.cfg en cada subcarpeta de maps/ (rápido).
 export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
   onProgress?.("Listando mapas en maps/…");
   const mapsDir = await rootHandle.getDirectoryHandle("maps");
@@ -73,14 +72,16 @@ export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
       }
       entries.push({ dir: `maps/${folderName}`, folder: folderName, label });
     } catch {
-      /* no es mapa jugable */
+      // no es mapa jugable
     }
   }
-  if (!entries.length) throw new Error("No se encontraron mapas en maps/*/global.cfg.");
+  if (!entries.length) {
+    throw new Error("No se encontraron mapas en maps/ (global.cfg por carpeta).");
+  }
   return entries.sort((a, b) => a.folder.localeCompare(b.folder, undefined, { sensitivity: "base" }));
 }
 
-/** Carga carpeta del mapa + .sli/.sco referenciados bajo demanda. */
+// Carga carpeta del mapa + .sli y .sco referenciados bajo demanda.
 export async function buildMapFileMapLazy(rootHandle, mapRelDir, collectAssetRefs, onProgress = null) {
   const mapDir = mapRelDir.replace(/\\/g, "/");
   const fileMap = new Map();
@@ -102,7 +103,7 @@ export async function buildMapFileMapLazy(rootHandle, mapRelDir, collectAssetRef
       const file = await readFileFromRoot(rootHandle, rel);
       fileMap.set(rel.replace(/\\/g, "/"), file);
     } catch {
-      /* asset ausente en disco */
+      // asset ausente en disco
     }
   }
 
@@ -157,7 +158,7 @@ function pickOmsiRootWebkit(onProgress = null) {
   });
 }
 
-/** Webkit: subset mapa + assets referenciados desde el fileMap completo. */
+// Webkit: subset mapa + assets referenciados desde el fileMap completo.
 export async function buildMapFileMapWebkit(fullFileMap, mapDir, collectAssetRefs, onProgress = null) {
   const prefix = mapDir.replace(/\\/g, "/");
   const pfx = prefix.endsWith("/") ? prefix : `${prefix}/`;

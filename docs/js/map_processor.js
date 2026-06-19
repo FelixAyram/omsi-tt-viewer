@@ -4,7 +4,7 @@
 import {
   buildMapFileMapLazy,
   buildMapFileMapWebkit,
-} from "./omsi_browser.js";
+} from "./omsi_browser.js?v=4";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -12,7 +12,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js";
+} from "./geometry.js?v=4";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -372,7 +372,7 @@ export function validateOmsiInstall(fileMap) {
   }
   const maps = findMaps(fileMap);
   if (!maps.length) {
-    throw new Error("No se encontraron mapas en maps/*/global.cfg.");
+    throw new Error("No se encontraron mapas en maps/ (global.cfg por carpeta).");
   }
   return maps.length;
 }
