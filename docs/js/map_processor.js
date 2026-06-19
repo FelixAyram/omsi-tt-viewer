@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=24";
-import { readOmsiText } from "./omsi_text.js?v=24";
+} from "./omsi_browser.js?v=25";
+import { readOmsiText } from "./omsi_text.js?v=25";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=24";
+} from "./geometry.js?v=25";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -255,7 +255,6 @@ function parseScoPaths(text) {
       j += 1;
     }
     if (vals.length >= 6) {
-      pathIndex += 1;
       out.set(pathIndex, {
         sx: vals[0],
         sy: vals[1],
@@ -268,6 +267,7 @@ function parseScoPaths(text) {
         typ: vals.length > 8 ? (vals[8] | 0) : VEHICLE_TYP,
         direction: vals.length > 10 ? (vals[10] | 0) : PATH_DIR_FORWARD,
       });
+      pathIndex += 1;
     }
     idx = j;
   }
@@ -340,13 +340,13 @@ function defaultVehicleSplinePath(pathsMap) {
   return sorted[0] ?? 0;
 }
 
-/** Paths .sco: índice 1-based; 0 o inexistente → mínimo o más cercano (como OMSI). */
+/** Paths .sco: índice 0-based (igual que .sli y path_idx del .ttr). */
 function normalizeObjectPath(pathsMap, pathIdxStr) {
   if (!pathsMap?.size) return pathIdxStr;
   const pidx = parseInt(pathIdxStr, 10);
-  if (!Number.isFinite(pidx)) return String(Math.min(...pathsMap.keys()));
+  if (!Number.isFinite(pidx)) return "0";
   if (pathsMap.has(pidx)) return String(pidx);
-  if (pidx <= 0) return String(Math.min(...pathsMap.keys()));
+  if (pidx < 0) return "0";
   const paths = [...pathsMap.keys()].sort((a, b) => a - b);
   let best = paths[0];
   let bestDist = Math.abs(best - pidx);
