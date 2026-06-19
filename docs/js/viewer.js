@@ -1,13 +1,14 @@
-import { APP_VERSION } from "./version.js?v=12";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=12";
+import { APP_VERSION } from "./version.js?v=13";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=13";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
+  pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=12";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=12";
-import { distPointPolyline } from "./geometry.js?v=12";
+} from "./omsi_browser.js?v=13";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=13";
+import { distPointPolyline } from "./geometry.js?v=13";
 import {
   initDebugPanel,
   debugClear,
@@ -17,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=12";
+} from "./debug.js?v=13";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -32,6 +33,8 @@ const pickOmsiBtn = document.getElementById("pickOmsiBtn");
 const pickMapFolderBtn = document.getElementById("pickMapFolderBtn");
 const omsiMapSelect = document.getElementById("omsiMapSelect");
 const loadOmsiMapBtn = document.getElementById("loadOmsiMapBtn");
+const globalCfgLabel = document.getElementById("globalCfgLabel");
+const pickGlobalCfgBtn = document.getElementById("pickGlobalCfgBtn");
 const routeList = document.getElementById("routeList");
 const fileInput = document.getElementById("fileInput");
 const showAllRails = document.getElementById("showAllRails");
@@ -90,6 +93,40 @@ let selectedRailId = null;
 let selectedRoutes = new Set();
 let omsiRoot = null;
 let omsiRootLabel = "";
+let selectedGlobalCfg = null;
+let selectedGlobalCfgMapDir = "";
+
+function clearGlobalCfgSelection() {
+  selectedGlobalCfg = null;
+  selectedGlobalCfgMapDir = "";
+  if (globalCfgLabel) {
+    globalCfgLabel.textContent = "Sin global.cfg elegido";
+    globalCfgLabel.classList.add("muted");
+  }
+  if (loadOmsiMapBtn) loadOmsiMapBtn.disabled = true;
+}
+
+function updateGlobalCfgUi() {
+  const mapDir = omsiMapSelect?.value;
+  const cfgOk = selectedGlobalCfg && selectedGlobalCfgMapDir === mapDir;
+  if (globalCfgLabel) {
+    if (cfgOk) {
+      globalCfgLabel.textContent = `global.cfg: ${selectedGlobalCfg.name || "elegido"}`;
+      globalCfgLabel.classList.remove("muted");
+    } else {
+      globalCfgLabel.textContent = mapDir
+        ? "Elige global.cfg de este mapa (obligatorio)"
+        : "Sin global.cfg elegido";
+      globalCfgLabel.classList.add("muted");
+    }
+  }
+  if (loadOmsiMapBtn) {
+    loadOmsiMapBtn.disabled = !omsiRoot || !mapDir || !cfgOk;
+  }
+  if (pickGlobalCfgBtn) {
+    pickGlobalCfgBtn.disabled = !omsiRoot || !mapDir;
+  }
+}
 
 function railPoints(rail) {
   if (rail.points?.length >= 2) return rail.points;
@@ -363,8 +400,10 @@ function setProgress(msg) {
 }
 
 async function populateOmsiMapSelect(catalog) {
+  clearGlobalCfgSelection();
   omsiMapSelect.disabled = true;
   loadOmsiMapBtn.disabled = true;
+  pickGlobalCfgBtn.disabled = true;
   omsiMapSelect.innerHTML = `<option value="">— ${catalog.length} mapas —</option>`;
   for (const entry of catalog) {
     const opt = document.createElement("option");
@@ -373,8 +412,8 @@ async function populateOmsiMapSelect(catalog) {
     omsiMapSelect.appendChild(opt);
   }
   omsiMapSelect.disabled = false;
-  loadOmsiMapBtn.disabled = false;
-  setProgress(`${catalog.length} mapas en maps/ — elige uno para cargar tiles y assets.`);
+  updateGlobalCfgUi();
+  setProgress(`${catalog.length} mapas — elige mapa, luego global.cfg, y pulsa Cargar.`);
 }
 
 function combineMapAndAssetRoots(mapPick, assetPick) {
@@ -422,9 +461,11 @@ async function onMapFolderPicked(mapPick) {
       { dir: mapPick.mapDir, folder: mapPick.folder, label: mapPick.label },
     ]);
     omsiMapSelect.value = mapPick.mapDir;
-    await loadSelectedOmsiMap();
+    updateGlobalCfgUi();
+    setProgress("Elige global.cfg del mapa y pulsa Cargar.");
   } catch (err) {
     omsiRoot = null;
+    clearGlobalCfgSelection();
     omsiPathLabel.textContent = "Sin carpeta seleccionada";
     omsiPathLabel.classList.add("muted");
     alertWithDebug(err, "Error al cargar mapa directo");
@@ -439,6 +480,7 @@ async function onOmsiFolderPicked(result) {
   if (!result) return;
   pickOmsiBtn.disabled = true;
   pickMapFolderBtn.disabled = true;
+  clearGlobalCfgSelection();
   setProgress("Conectando con OMSI 2…");
   try {
     await logPickDebug("Carpeta OMSI 2 elegida", result);
@@ -476,11 +518,11 @@ async function onOmsiFolderPicked(result) {
     await populateOmsiMapSelect(catalog);
   } catch (err) {
     omsiRoot = null;
+    clearGlobalCfgSelection();
     omsiPathLabel.textContent = "Sin carpeta seleccionada";
     omsiPathLabel.classList.add("muted");
     omsiMapSelect.innerHTML = '<option value="">— Elige primero la carpeta OMSI 2 —</option>';
     omsiMapSelect.disabled = true;
-    loadOmsiMapBtn.disabled = true;
     alertWithDebug(err, "Error al listar mapas");
     setProgress("");
   } finally {
@@ -492,13 +534,50 @@ async function onOmsiFolderPicked(result) {
 async function loadSelectedOmsiMap() {
   const mapDir = omsiMapSelect.value;
   if (!mapDir || !omsiRoot) return;
+  if (!selectedGlobalCfg || selectedGlobalCfgMapDir !== mapDir) {
+    alert("Debes elegir global.cfg del mapa antes de cargar.\n\nPulsa «Elegir global.cfg…» y abre el archivo dentro de la carpeta del mapa.");
+    return;
+  }
   try {
     mapSelect.value = "";
     setProgress(`Cargando ${mapDir.split("/").pop()}…`);
-    const json = await loadMapLazy(omsiRoot, mapDir, setProgress);
+    const json = await loadMapLazy(omsiRoot, mapDir, setProgress, {
+      globalCfgFile: selectedGlobalCfg,
+    });
     await applyData(json);
   } catch (err) {
     alertWithDebug(err, "Error al cargar mapa");
+    setProgress("");
+  }
+}
+
+async function onPickGlobalCfg() {
+  const mapDir = omsiMapSelect.value;
+  if (!mapDir) {
+    alert("Elige primero un mapa en el desplegable.");
+    return;
+  }
+  const folder = mapDir.split("/").pop();
+  try {
+    setProgress(`Abre global.cfg de ${folder}…`);
+    const picked = await pickGlobalCfgFile();
+    if (!picked) {
+      setProgress("");
+      return;
+    }
+    selectedGlobalCfg = picked.file;
+    selectedGlobalCfgMapDir = mapDir;
+    updateGlobalCfgUi();
+    setProgress(`global.cfg listo — pulsa Cargar mapa para ${folder}.`);
+    debugPrint(
+      appendSection((debugLogEl?.textContent || "").split("\n"), [
+        "=== global.cfg elegido manualmente ===",
+        `Mapa: ${mapDir}`,
+        `Archivo: ${picked.file.name} (${picked.file.size} bytes)`,
+      ]),
+    );
+  } catch (err) {
+    alertWithDebug(err, "Error al elegir global.cfg");
     setProgress("");
   }
 }
@@ -521,8 +600,13 @@ pickMapFolderBtn.addEventListener("click", async () => {
 
 loadOmsiMapBtn.addEventListener("click", loadSelectedOmsiMap);
 
+pickGlobalCfgBtn.addEventListener("click", () => {
+  onPickGlobalCfg().catch((err) => alertWithDebug(err, "Error al elegir global.cfg"));
+});
+
 omsiMapSelect.addEventListener("change", () => {
-  if (omsiMapSelect.value) loadSelectedOmsiMap();
+  clearGlobalCfgSelection();
+  updateGlobalCfgUi();
 });
 
 mapSelect.addEventListener("change", async () => {

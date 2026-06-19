@@ -22,14 +22,20 @@
           <p id="omsiPathLabel" class="omsi-path muted">Sin carpeta seleccionada</p>
           <button type="button" id="pickOmsiBtn" class="btn-primary">Elegir carpeta OMSI 2…</button>
           <button type="button" id="pickMapFolderBtn" class="btn-secondary btn-spaced">Elegir carpeta de mapa…</button>
-          <p class="hint-small">Opción A: carpeta OMSI 2 (<code>omsi.exe</code>) y luego un mapa del listado.</p>
+          <p class="hint-small">Opción A: carpeta OMSI 2 (<code>omsi.exe</code>), mapa del listado, y <strong>global.cfg</strong> manual.</p>
           <p class="hint-small">Opción B: carpeta del mapa directamente (ej. <code>…/maps/Test_Lat30</code>); después pediremos OMSI 2 solo para splines y objetos.</p>
 
           <h2 class="panel-sub">Mapa</h2>
           <select id="omsiMapSelect" disabled aria-label="Mapa OMSI">
             <option value="">— Elige primero la carpeta OMSI 2 —</option>
           </select>
-          <button type="button" id="loadOmsiMapBtn" class="btn-secondary" disabled>Cargar mapa</button>
+
+          <h2 class="panel-sub">global.cfg (obligatorio)</h2>
+          <p id="globalCfgLabel" class="omsi-path muted">Sin global.cfg elegido</p>
+          <button type="button" id="pickGlobalCfgBtn" class="btn-secondary" disabled>Elegir global.cfg…</button>
+          <p class="hint-small">Abre el <code>global.cfg</code> de la carpeta del mapa (ej. <code>…/maps/Test_Lat30/global.cfg</code>).</p>
+
+          <button type="button" id="loadOmsiMapBtn" class="btn-secondary btn-spaced" disabled>Cargar mapa</button>
 
           <details class="demo-fallback">
             <summary>Demo / JSON sin OMSI</summary>
@@ -80,6 +86,6 @@
     </div>
   </div>
 
-  <script type="module" src="js/viewer.js?v=12"></script>
+  <script type="module" src="js/viewer.js?v=13"></script>
 </body>
 </html>

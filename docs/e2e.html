@@ -19,7 +19,7 @@
       validateOmsiInstall,
       listMapCatalog,
       processMapFolder,
-    } from "./js/map_processor.js?v=12";
+    } from "./js/map_processor.js?v=13";
 
     const statusEl = document.getElementById("status");
 
@@ -67,9 +67,11 @@
 
       setStatus(`Catálogo: ${catalog.length} mapa(s)\nProcesando ${mapDir}…`);
       const omsiRoot = { mode: "webkit", label: manifest.omsiLabel || "E2E", fileMap };
+      const globalKey = globals.find((k) => k.toLowerCase().startsWith(`${mapDir.toLowerCase()}/`)) || globals[0];
+      const globalCfgFile = fileMap.get(globalKey);
       const json = await loadMapLazy(omsiRoot, mapDir, (m) => {
         statusEl.textContent = `${statusEl.textContent.split("\n").slice(0, 3).join("\n")}\n${m}`;
-      });
+      }, { globalCfgFile });
 
       const rails = json.rails?.length ?? 0;
       const free = json.rails?.filter((r) => r.freeStart).length ?? 0;

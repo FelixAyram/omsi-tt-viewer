@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=12";
-import { readOmsiText } from "./omsi_text.js?v=12";
+} from "./omsi_browser.js?v=13";
+import { readOmsiText } from "./omsi_text.js?v=13";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=12";
+} from "./geometry.js?v=13";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -371,6 +371,14 @@ function pickTilePaths(files, mapDir) {
   return tiles.filter((t) => normPath(t).split("/").length === minDepth);
 }
 
+export function injectGlobalCfgIntoFileMap(fileMap, mapDir, globalFile) {
+  const prefix = resolveMapPrefixInFileMap(fileMap, mapDir);
+  const p = prefix.endsWith("/") ? prefix : `${prefix}/`;
+  const key = normPath(`${p}global.cfg`);
+  fileMap.set(key, globalFile);
+  return key;
+}
+
 function resolveMapContext(files, mapDir) {
   const folder = normPath(mapDir).split("/").pop();
   const mapPrefixRe = new RegExp(
@@ -403,6 +411,7 @@ function resolveMapContext(files, mapDir) {
   const keysSample = [...files.keys()].slice(0, 15).join("\n  ");
   throw new Error(
     `No se encontró global.cfg con tiles en ${mapDir}. ` +
+      `Usa «Elegir global.cfg…» y selecciona el archivo del mapa. ` +
       `Archivos en memoria: ${files.size}. Tiles candidatos: ${tilePaths.length}. ` +
       (keysSample ? `Muestra:\n  ${keysSample}` : "fileMap vacío."),
   );
@@ -837,7 +846,14 @@ export async function loadFilesFromInput(fileList) {
 }
 
 /** Carga lazy: tiles del mapa → refs en .map → .sli/.sco → procesar. */
-export async function loadMapLazy(omsiRoot, mapDir, onProgress = () => {}) {
+export async function loadMapLazy(omsiRoot, mapDir, onProgress = () => {}, loadOptions = {}) {
+  const globalCfgFile = loadOptions.globalCfgFile;
+  if (!globalCfgFile) {
+    throw new Error(
+      "Falta global.cfg. Pulsa «Elegir global.cfg…» y abre el archivo dentro de la carpeta del mapa.",
+    );
+  }
+
   let fileMap;
   if (omsiRoot.mode === "fsa") {
     fileMap = await buildMapFileMapLazy(
@@ -873,6 +889,7 @@ export async function loadMapLazy(omsiRoot, mapDir, onProgress = () => {}) {
   if (omsiRoot.mode === "fsa" || omsiRoot.mode === "fsa-combined") {
     await ensureMapRootInFileMap(omsiRoot.rootHandle, mapDir, fileMap);
   }
+  injectGlobalCfgIntoFileMap(fileMap, mapDir, globalCfgFile);
   return processMapFolder(fileMap, mapDir, onProgress);
 }
 

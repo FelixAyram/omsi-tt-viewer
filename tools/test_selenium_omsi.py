@@ -102,6 +102,7 @@ class TestRunner:
         wait = WebDriverWait(self.driver, 15)
         wait.until(EC.presence_of_element_located((By.ID, "pickOmsiBtn")))
         wait.until(EC.presence_of_element_located((By.ID, "pickMapFolderBtn")))
+        wait.until(EC.presence_of_element_located((By.ID, "pickGlobalCfgBtn")))
         wait.until(EC.presence_of_element_located((By.ID, "debugLog")))
         self.ok("ui_buttons")
 

@@ -2,7 +2,7 @@
 // 1) Validar raíz y listar global.cfg en subcarpetas de maps/
 // 2) Al elegir mapa: cargar tiles, TTData y .sli/.sco referenciados
 
-import { readOmsiText } from "./omsi_text.js?v=12";
+import { readOmsiText } from "./omsi_text.js?v=13";
 
 function normPath(path) {
   return path.replace(/\\/g, "/");
@@ -754,4 +754,59 @@ export async function buildMapFileMapWebkitCombined(
   }
 
   return mapFiles;
+}
+
+/** El usuario debe elegir global.cfg manualmente (showOpenFilePicker). */
+export async function pickGlobalCfgFile() {
+  if (typeof window.showOpenFilePicker === "function") {
+    try {
+      const [handle] = await window.showOpenFilePicker({
+        id: "omsi-global-cfg",
+        types: [
+          {
+            description: "OMSI global.cfg",
+            accept: {
+              "text/plain": [".cfg"],
+              "application/octet-stream": [".cfg"],
+            },
+          },
+        ],
+        multiple: false,
+      });
+      const file = await handle.getFile();
+      if (!/^global\.cfg$/i.test(file.name)) {
+        throw new Error(`Archivo incorrecto: «${file.name}». Debe ser global.cfg del mapa.`);
+      }
+      return { file, label: file.name };
+    } catch (err) {
+      if (err?.name === "AbortError") return null;
+      throw err;
+    }
+  }
+  return pickGlobalCfgFileWebkit();
+}
+
+function pickGlobalCfgFileWebkit() {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".cfg";
+    input.style.display = "none";
+    document.body.appendChild(input);
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      document.body.removeChild(input);
+      if (!file) {
+        resolve(null);
+        return;
+      }
+      if (!/^global\.cfg$/i.test(file.name)) {
+        alert(`Debe ser global.cfg, no «${file.name}».`);
+        resolve(null);
+        return;
+      }
+      resolve({ file, label: file.name });
+    });
+    input.click();
+  });
 }
