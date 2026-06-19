@@ -5,6 +5,7 @@ import {
   listMapsInFiles,
   processMapFolder,
   detectOmsiPrefix,
+  mergeFileMaps,
 } from "./map_processor.js";
 
 const canvas = document.getElementById("mapCanvas");
@@ -13,6 +14,7 @@ const mapSelect = document.getElementById("mapSelect");
 const routeList = document.getElementById("routeList");
 const fileInput = document.getElementById("fileInput");
 const folderInput = document.getElementById("folderInput");
+const assetsInput = document.getElementById("assetsInput");
 const localMapSelect = document.getElementById("localMapSelect");
 const loadLocalMapBtn = document.getElementById("loadLocalMapBtn");
 const showAllRails = document.getElementById("showAllRails");
@@ -205,10 +207,14 @@ function updateStats() {
     return;
   }
   const s = data.stats || {};
-  statsEl.textContent =
+  let text =
     `${data.mapName} · ${s.railCount ?? data.rails.length} rieles · ` +
     `${s.freeStartCount ?? 0} libres · ${s.busstopCount ?? data.busstops.length} paradas · ` +
     `${s.routeCount ?? data.routes.length} rutas`;
+  if (s.sliMissing > 0 || s.scoMissing > 0) {
+    text += ` · faltan ${s.sliMissing ?? 0} .sli / ${s.scoMissing ?? 0} .sco`;
+  }
+  statsEl.textContent = text;
 }
 
 function updateInfo(rail) {
@@ -328,27 +334,55 @@ folderInput.addEventListener("change", async (ev) => {
   if (!fileList?.length) return;
   try {
     pendingFileMap = await loadFilesFromInput(fileList);
-    const maps = listMapsInFiles(pendingFileMap);
-    if (!maps.length) {
-      alert("No se encontró global.cfg. Selecciona la carpeta OMSI 2 o la carpeta del mapa.");
-      return;
-    }
-    localMapSelect.innerHTML = maps
-      .map((m) => `<option value="${m}">${m.split("/").pop() || m}</option>`)
-      .join("");
-    if (maps.length === 1) {
-      await loadLocalMap(maps[0]);
-    } else {
-      setProgress(`${maps.length} mapas detectados — elige uno y pulsa Cargar.`);
-    }
-    const omsi = detectOmsiPrefix(pendingFileMap);
-    if (!omsi && !pendingFileMap.has("Splines/") && ![...pendingFileMap.keys()].some((k) => k.includes("Splines/"))) {
-      setProgress("Aviso: no se ven Splines/Sceneryobjects — selecciona la carpeta raíz OMSI 2.");
-    }
+    await afterFilesLoaded();
   } catch (err) {
     alert(err.message || String(err));
   }
 });
+
+assetsInput.addEventListener("change", async (ev) => {
+  const fileList = ev.target.files;
+  if (!fileList?.length) return;
+  try {
+    const extra = await loadFilesFromInput(fileList);
+    pendingFileMap = pendingFileMap ? mergeFileMaps(pendingFileMap, extra) : extra;
+    await afterFilesLoaded(true);
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+});
+
+async function afterFilesLoaded(reloadCurrent = false) {
+  const maps = listMapsInFiles(pendingFileMap);
+  if (!maps.length) {
+    alert("No se encontró global.cfg. Selecciona la carpeta del mapa (con tiles y TTData).");
+    return;
+  }
+  localMapSelect.innerHTML = maps
+    .map((m) => `<option value="${m}">${m.split("/").pop() || m}</option>`)
+    .join("");
+
+  const omsi = detectOmsiPrefix(pendingFileMap);
+  const hasSplines = [...pendingFileMap.keys()].some((k) => /splines\//i.test(k.replace(/\\/g, "/")));
+  const hasScenery = [...pendingFileMap.keys()].some((k) => /sceneryobjects\//i.test(k.replace(/\\/g, "/")));
+
+  if (!hasSplines && !hasScenery && !omsi) {
+    setProgress(
+      "Mapa cargado. Añade Splines + Sceneryobjects (botón de abajo) para ver todos los rieles.",
+    );
+  }
+
+  const current = localMapSelect.value;
+  if (reloadCurrent && current) {
+    await loadLocalMap(current);
+    return;
+  }
+  if (maps.length === 1) {
+    await loadLocalMap(maps[0]);
+  } else {
+    setProgress(`${maps.length} mapas detectados — elige uno y pulsa Cargar.`);
+  }
+}
 
 async function loadLocalMap(mapDir) {
   if (!pendingFileMap) return;

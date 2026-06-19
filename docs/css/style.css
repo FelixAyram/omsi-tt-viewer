@@ -124,6 +124,11 @@ select, .btn-secondary {
   line-height: 1.35;
 }
 
+.hint-small code {
+  font-size: 0.85em;
+  color: var(--text);
+}
+
 .local-map-select {
   margin-top: 6px;
 }

@@ -20,10 +20,14 @@
           <h2>Mapa</h2>
           <select id="mapSelect" aria-label="Mapa precargado"></select>
           <label class="file-upload">
-            <span>Abrir carpeta OMSI / mapa</span>
+            <span>1. Carpeta del mapa (global.cfg + tiles)</span>
             <input type="file" id="folderInput" webkitdirectory directory multiple />
           </label>
-          <p class="hint-small">Incluye global.cfg, tiles, TTData y (desde raíz OMSI 2) Splines + Sceneryobjects</p>
+          <label class="file-upload secondary">
+            <span>2. Añadir Splines + Sceneryobjects de OMSI 2</span>
+            <input type="file" id="assetsInput" webkitdirectory directory multiple />
+          </label>
+          <p class="hint-small">Para ver <strong>todos</strong> los rieles (~264 en Test_Lat30) necesitas el mapa y las carpetas <code>Splines</code> y <code>Sceneryobjects</code> del juego. También puedes usar el mapa precargado del desplegable.</p>
           <select id="localMapSelect" class="local-map-select" aria-label="Mapa local detectado"></select>
           <button type="button" id="loadLocalMapBtn" class="btn-secondary">Cargar mapa seleccionado</button>
           <label class="file-upload secondary">

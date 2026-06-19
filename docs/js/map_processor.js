@@ -201,21 +201,97 @@ function railKey(kind, elementId, pathIdx) {
   return `${kind}:${elementId}:${pathIdx}`;
 }
 
-function resolveFile(files, relPath, omsiPrefix) {
-  const norm = relPath.replace(/\\/g, "/");
-  const tries = [
+/** Índice de rutas con variantes (mayúsculas, sufijos, carpetas parciales). */
+export function buildFileIndex(fileMap) {
+  const index = new Map();
+  for (const [rawKey, file] of fileMap) {
+    const key = rawKey.replace(/\\/g, "/");
+    index.set(key, file);
+    index.set(key.toLowerCase(), file);
+  }
+  return index;
+}
+
+export function mergeFileMaps(...maps) {
+  const out = new Map();
+  for (const m of maps) {
+    for (const [k, v] of m) out.set(k, v);
+  }
+  return out;
+}
+
+function resolveFile(index, relPath, omsiPrefix = "") {
+  const norm = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const normLower = norm.toLowerCase();
+  const variants = new Set([
     norm,
+    normLower,
     `${omsiPrefix}${norm}`,
-    `${omsiPrefix}Sceneryobjects/${norm}`,
-    norm.replace(/^Sceneryobjects\//i, `${omsiPrefix}Sceneryobjects/`),
+    `${omsiPrefix}${norm}`.toLowerCase(),
+  ]);
+
+  if (normLower.startsWith("sceneryobjects/")) {
+    variants.add(norm.slice("Sceneryobjects/".length));
+    variants.add(norm.slice("sceneryobjects/".length));
+  } else if (normLower.includes(".sco")) {
+    variants.add(`Sceneryobjects/${norm}`);
+    variants.add(`sceneryobjects/${norm}`.toLowerCase());
+  }
+
+  if (normLower.startsWith("splines/")) {
+    variants.add(norm.slice("Splines/".length));
+    variants.add(norm.slice("splines/".length));
+  } else if (normLower.includes(".sli")) {
+    variants.add(`Splines/${norm}`);
+    variants.add(`splines/${norm}`.toLowerCase());
+  }
+
+  for (const v of variants) {
+    if (index.has(v)) return index.get(v);
+  }
+
+  let best = null;
+  let bestLen = Infinity;
+  for (const [k, file] of index) {
+    const kl = k.toLowerCase();
+    if (kl.endsWith(normLower) || kl.endsWith(`/${normLower}`)) {
+      if (k.length < bestLen) {
+        bestLen = k.length;
+        best = file;
+      }
+    }
+  }
+  return best;
+}
+
+function resolveMapContext(files, mapDir) {
+  const base = mapDir.replace(/\\/g, "/").replace(/\/$/, "");
+  const shortName = base.split("/").pop() || base;
+  const prefixCandidates = [
+    `${base}/`,
+    base ? `${base}/` : "",
+    `${shortName}/`,
+    "",
   ];
-  for (const t of tries) {
-    if (files.has(t)) return files.get(t);
+
+  for (const prefix of prefixCandidates) {
+    const globalKey = [...files.keys()].find((k) => {
+      const n = k.replace(/\\/g, "/");
+      if (prefix && !n.startsWith(prefix)) return false;
+      return n.endsWith("global.cfg") || n === `${prefix}global.cfg`.replace(/\/$/, "/global.cfg");
+    });
+    const tileCount = [...files.keys()].filter((k) => {
+      const n = k.replace(/\\/g, "/");
+      return (prefix ? n.startsWith(prefix) : true) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+    }).length;
+    if (globalKey && tileCount > 0) {
+      const globalNorm = globalKey.replace(/\\/g, "/");
+      const resolvedPrefix = globalNorm.slice(0, globalNorm.lastIndexOf("global.cfg"));
+      return { prefix: resolvedPrefix, globalKey, globalFile: files.get(globalKey) };
+    }
   }
-  for (const [k, f] of files) {
-    if (k.replace(/\\/g, "/").toLowerCase().endsWith(norm.toLowerCase())) return f;
-  }
-  return null;
+
+  throw new Error("No se encontró global.cfg con tiles en la carpeta del mapa.");
 }
 
 function findMaps(files) {
@@ -288,19 +364,19 @@ function busstopWorld(graph, stop, splines) {
  * @param {(msg:string)=>void} onProgress
  */
 export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
-  const prefix = mapDir.endsWith("/") ? mapDir : `${mapDir}/`;
+  const ctx = resolveMapContext(fileMap, mapDir);
+  const prefix = ctx.prefix;
   const omsiPrefix = detectOmsiPrefix(fileMap);
-  const files = fileMap;
+  const index = buildFileIndex(fileMap);
 
   onProgress("Leyendo global.cfg…");
-  const globalFile = files.get(`${prefix}global.cfg`);
-  if (!globalFile) throw new Error("No se encontró global.cfg en la carpeta del mapa.");
-  const globalText = await readText(globalFile);
+  const globalText = await readText(ctx.globalFile);
   const mapName = parseGlobalName(globalText) || mapDir.split("/").pop();
 
-  const tileFiles = [...files.keys()].filter(
-    (p) => p.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(p),
-  );
+  const tileFiles = [...fileMap.keys()].filter((p) => {
+    const n = p.replace(/\\/g, "/");
+    return n.startsWith(prefix) && /tile_-?\d+_-?\d+\.map$/i.test(n);
+  });
   if (!tileFiles.length) throw new Error("No hay tiles tile_*.map en la carpeta.");
 
   const tileCoords = tileFiles.map((f) => parseTileCoords(f.split("/").pop())).filter(Boolean);
@@ -312,11 +388,15 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   const busstops = [];
   const sliCache = new Map();
   const scoCache = new Map();
+  let sliFound = 0;
+  let sliMissing = 0;
+  let scoFound = 0;
+  let scoMissing = 0;
 
   onProgress(`Parseando ${tileFiles.length} tiles…`);
   for (const tilePath of tileFiles) {
     const tileName = tilePath.split("/").pop();
-    const text = await readText(files.get(tilePath));
+    const text = await readText(fileMap.get(tilePath));
     const lines = text.split(/\r?\n/);
     const coords = parseTileCoords(tileName);
     const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
@@ -393,22 +473,38 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   for (const sp of splines.values()) {
     const key = sp.path.replace(/\\/g, "/").toLowerCase();
     if (sliCache.has(key)) continue;
-    const file = resolveFile(files, sp.path, omsiPrefix);
+    const file = resolveFile(index, sp.path, omsiPrefix);
     if (file) {
       sliCache.set(key, parseSliPaths(await readText(file)));
+      sliFound += 1;
     } else {
       sliCache.set(key, new Map([[0, { typ: 0, lateral: 0, height: 0, direction: 2 }]]));
+      sliMissing += 1;
     }
   }
 
   onProgress("Cargando paths .sco…");
+  const scoNeeded = new Set();
+  for (const obj of objects.values()) scoNeeded.add(obj.scoRel.replace(/\\/g, "/").toLowerCase());
+
+  for (const relLower of scoNeeded) {
+    const rel = [...objects.values()].find((o) => o.scoRel.replace(/\\/g, "/").toLowerCase() === relLower)?.scoRel;
+    if (!rel) continue;
+    const key = rel.replace(/\\/g, "/").toLowerCase();
+    if (scoCache.has(key)) continue;
+    const file = resolveFile(index, rel, omsiPrefix);
+    if (file) {
+      scoCache.set(key, parseScoPaths(await readText(file)));
+      scoFound += 1;
+    } else {
+      scoCache.set(key, new Map());
+      scoMissing += 1;
+    }
+  }
+
   for (const obj of objects.values()) {
     const key = obj.scoRel.replace(/\\/g, "/").toLowerCase();
-    if (!scoCache.has(key)) {
-      const file = resolveFile(files, obj.scoRel, omsiPrefix);
-      scoCache.set(key, file ? parseScoPaths(await readText(file)) : new Map());
-    }
-    obj.paths = scoCache.get(key);
+    obj.paths = scoCache.get(key) || new Map();
   }
 
   onProgress("Generando rieles…");
@@ -492,8 +588,8 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   onProgress("Rutas TTData…");
   const routes = [];
   const ttrLabels = new Map();
-  for (const [path, file] of files) {
-    if (!path.startsWith(prefix) || !/\.ttp$/i.test(path)) continue;
+  for (const [path, file] of fileMap) {
+    if (!path.replace(/\\/g, "/").startsWith(prefix) || !/\.ttp$/i.test(path)) continue;
     const ttpText = await readText(file);
     const ttpLines = ttpText.split(/\r?\n/);
     let trackName = "";
@@ -513,8 +609,8 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   }
 
   const seenTtr = new Set();
-  for (const [path, file] of files) {
-    if (!path.startsWith(prefix) || !/\.ttr$/i.test(path)) continue;
+  for (const [path, file] of fileMap) {
+    if (!path.replace(/\\/g, "/").startsWith(prefix) || !/\.ttr$/i.test(path)) continue;
     const norm = path.replace(/\\/g, "/");
     if (seenTtr.has(norm)) continue;
     seenTtr.add(norm);
@@ -539,7 +635,16 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     bounds.minX = bounds.maxX = bounds.minZ = bounds.maxZ = 0;
   }
 
-  onProgress("Listo.");
+  let progressMsg = "Listo.";
+  if (sliMissing > 0 || scoMissing > 0) {
+    progressMsg =
+      `Listo (${rails.length} rieles). Faltan assets: ${sliMissing} .sli, ${scoMissing} .sco — ` +
+      "añade carpetas Splines y Sceneryobjects de OMSI 2, o usa el mapa precargado.";
+  } else {
+    progressMsg = `Listo — ${rails.length} rieles (${sliFound} .sli, ${scoFound} .sco).`;
+  }
+  onProgress(progressMsg);
+
   return {
     version: 2,
     mapName,
@@ -552,6 +657,12 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
       freeStartCount: freeIds.size,
       busstopCount: busstopOut.length,
       routeCount: routes.length,
+      sliFound,
+      sliMissing,
+      scoFound,
+      scoMissing,
+      splineCount: splines.size,
+      objectCount: objects.size,
     },
   };
 }
