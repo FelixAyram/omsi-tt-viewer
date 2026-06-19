@@ -1,20 +1,26 @@
-import { APP_VERSION } from "./version.js?v=33";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=33";
+import { APP_VERSION } from "./version.js?v=34";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=34";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=33";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=33";
+} from "./omsi_browser.js?v=34";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=34";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=33";
+} from "./map_renderer.js?v=34";
+import {
+  RailWebGLRenderer,
+  buildGpuSegmentLayers,
+  buildGpuOverlaySegments,
+  buildGpuBusInstances,
+} from "./map_webgl.js?v=34";
 import {
   initDebugPanel,
   debugClear,
@@ -24,10 +30,9 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=33";
+} from "./debug.js?v=34";
 
 const LARGE_MAP_RAILS = 15000;
-const LITE_MODE_RAILS = 8000;
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -35,7 +40,9 @@ if (appVersionEl) {
 }
 
 const canvas = document.getElementById("mapCanvas");
-const ctx = canvas.getContext("2d");
+const gpuRenderer = new RailWebGLRenderer(canvas);
+const useGpu = gpuRenderer.ok;
+const ctx = useGpu ? null : canvas.getContext("2d");
 const mapSelect = document.getElementById("mapSelect");
 const omsiPathLabel = document.getElementById("omsiPathLabel");
 const pickOmsiBtn = document.getElementById("pickOmsiBtn");
@@ -103,6 +110,9 @@ let panAnchor = null;
 let panSnapshot = null;
 let drawPending = false;
 let lastDrawnVisible = 0;
+let gpuSegmentTotal = 0;
+let railsById = null;
+let overlayDirty = true;
 let selectedRailId = null;
 let selectedRoutes = new Set();
 let omsiRoot = null;
@@ -190,8 +200,23 @@ function drawPanPreview(dx, dy) {
 }
 
 function isLiteMode() {
-  const n = data?.stats?.railCount ?? data?.rails?.length ?? 0;
-  return n >= LITE_MODE_RAILS;
+  return !useGpu && (data?.stats?.railCount ?? data?.rails?.length ?? 0) >= LARGE_MAP_RAILS;
+}
+
+function markOverlayDirty() {
+  overlayDirty = true;
+}
+
+function rebuildGpuOverlayIfNeeded() {
+  if (!useGpu || !railsById || !overlayDirty) return;
+  overlayDirty = false;
+  const overlay = buildGpuOverlaySegments(railsById, {
+    routeRails: buildRouteRailMap(),
+    selectedRailId,
+    selectedHex: SELECTED.stroke,
+    spawnSegmentFn: railSpawnSegment,
+  });
+  gpuRenderer.setOverlayLayer(overlay);
 }
 
 function railPoints(rail) {
@@ -224,11 +249,15 @@ function resizeCanvas() {
   const dpr = window.devicePixelRatio || 1;
   const w = wrap.clientWidth;
   const h = wrap.clientHeight;
-  canvas.width = Math.floor(w * dpr);
-  canvas.height = Math.floor(h * dpr);
-  canvas.style.width = `${w}px`;
-  canvas.style.height = `${h}px`;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (useGpu) {
+    gpuRenderer.resize(w, h, dpr);
+  } else {
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    canvas.style.width = `${w}px`;
+    canvas.style.height = `${h}px`;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
   scheduleDraw();
 }
 
@@ -305,6 +334,28 @@ function prepareVisibleItems() {
 }
 
 function draw() {
+  if (useGpu) {
+    if (!gpuRenderer.ok) return;
+    if (!data) {
+      gpuRenderer.resize(canvas.clientWidth, canvas.clientHeight, window.devicePixelRatio || 1);
+      gpuRenderer.draw(view, {
+        mirrorX: VIEW_MIRROR_X,
+        showAll: false,
+        freeOnly: false,
+        showBusstops: false,
+      });
+      return;
+    }
+    rebuildGpuOverlayIfNeeded();
+    lastDrawnVisible = gpuRenderer.draw(view, {
+      mirrorX: VIEW_MIRROR_X,
+      showAll: showAllRails.checked,
+      freeOnly: showFreeOnly.checked,
+      showBusstops: showBusstops.checked,
+    });
+    return;
+  }
+
   if (!ctx) return;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -389,7 +440,11 @@ function updateStats() {
   if (s.parallelWorkers > 0) {
     text += ` · ${s.parallelWorkers}/${s.parallelPoolSize ?? s.parallelWorkers} workers`;
   }
-  if (lastDrawnVisible > 0 && total >= LARGE_MAP_RAILS) {
+  if (useGpu) {
+    text += " · GPU WebGL2";
+    if (gpuSegmentTotal > 0) text += ` · ${gpuSegmentTotal} segmentos VRAM`;
+  }
+  if (!useGpu && lastDrawnVisible > 0 && total >= LARGE_MAP_RAILS) {
     text += ` · vista ${lastDrawnVisible}/${total} rieles`;
   }
   statsEl.textContent = text;
@@ -467,6 +522,7 @@ function populateRoutes() {
     cb.addEventListener("change", () => {
       if (cb.checked) selectedRoutes.add(route.id);
       else selectedRoutes.delete(route.id);
+      markOverlayDirty();
       scheduleDraw();
     });
     wrap.appendChild(label);
@@ -525,18 +581,35 @@ async function applyData(json, timing = null) {
   selectedRailId = null;
   panSnapshot = null;
   panAnchor = null;
-  const railCount = json.stats?.railCount ?? json.rails?.length ?? 0;
-  if (railCount >= LARGE_MAP_RAILS) {
-    showAllRails.checked = false;
-    showFreeOnly.checked = false;
-  } else {
-    showAllRails.checked = true;
-  }
+  showAllRails.checked = true;
+  showFreeOnly.checked = false;
+
   railIndex = buildRailSpatialIndex(json.rails || []);
+  railsById = new Map((json.rails || []).map((r) => [r.id, r]));
+  overlayDirty = true;
   fitBounds(data.bounds);
   const drawStart = performance.now();
   populateRoutes();
   updateInfo(null);
+
+  if (useGpu && json.rails?.length) {
+    setProgress("Subiendo geometría a GPU…");
+    const layers = await buildGpuSegmentLayers(json.rails, {
+      railTyp: RAIL_TYP,
+      freeStartHex: FREE_START.stroke,
+      spawnSegmentFn: railSpawnSegment,
+      onProgress: (i, t) => setProgress(`GPU ${Math.round((100 * i) / t)}% (${i}/${t} rieles)…`),
+    });
+    gpuSegmentTotal = Math.floor(layers.base.length / 9);
+    gpuRenderer.setBaseLayer(layers.base);
+    gpuRenderer.setFreeLayer(layers.free);
+    gpuRenderer.setOverlayLayer([]);
+    gpuRenderer.setBusLayer(
+      buildGpuBusInstances(json.busstops || [], BUSSTOP.fill, BUSSTOP.stroke),
+    );
+    resizeCanvas();
+  }
+
   draw();
   const drawMs = performance.now() - drawStart;
   if (timing) {
@@ -833,7 +906,7 @@ canvas.addEventListener("pointerdown", (ev) => {
     offsetX: view.offsetX,
     offsetY: view.offsetY,
   };
-  snapshotCanvas();
+  if (!useGpu) snapshotCanvas();
   canvas.setPointerCapture(ev.pointerId);
 });
 
@@ -841,6 +914,13 @@ canvas.addEventListener("pointermove", (ev) => {
   if (!dragging || !panAnchor) return;
   const dx = ev.clientX - panAnchor.x;
   const dy = ev.clientY - panAnchor.y;
+  if (useGpu) {
+    const panX = VIEW_MIRROR_X ? dx / view.scale : -dx / view.scale;
+    view.offsetX = panAnchor.offsetX + panX;
+    view.offsetY = panAnchor.offsetY - dy / view.scale;
+    scheduleDraw();
+    return;
+  }
   drawPanPreview(dx, dy);
 });
 
@@ -864,6 +944,7 @@ canvas.addEventListener("pointerup", (ev) => {
   panAnchor = null;
   const rail = findRailAt(ev.offsetX, ev.offsetY);
   selectedRailId = rail?.id || null;
+  markOverlayDirty();
   updateInfo(rail);
   scheduleDraw();
 });
