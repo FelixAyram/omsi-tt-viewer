@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=18";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=18";
+import { APP_VERSION } from "./version.js?v=19";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=19";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=18";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=18";
-import { distPointPolyline } from "./geometry.js?v=18";
+} from "./omsi_browser.js?v=19";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=19";
+import { distPointPolyline } from "./geometry.js?v=19";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=18";
+} from "./debug.js?v=19";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -132,6 +132,23 @@ function railPoints(rail) {
   if (rail.points?.length >= 2) return rail.points;
   if (rail.start && rail.end) return [rail.start, rail.end];
   return [];
+}
+
+/** Tramo verde desde el punto de spawn OMSI hasta el final de circulación. */
+function railSpawnSegment(rail) {
+  const pts = railPoints(rail);
+  if (!rail.freeStart || !rail.trafficStart || pts.length < 2) return pts;
+  let bestIdx = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < pts.length; i += 1) {
+    const d = Math.hypot(pts[i][0] - rail.trafficStart[0], pts[i][2] - rail.trafficStart[2]);
+    if (d < bestD) {
+      bestD = d;
+      bestIdx = i;
+    }
+  }
+  if (rail.direction === 1) return pts.slice(bestIdx);
+  return pts.slice(0, bestIdx + 1);
 }
 
 function resizeCanvas() {
@@ -248,7 +265,7 @@ function draw() {
   for (const rail of data.rails) {
     const routeColors = routeRails.get(rail.id);
     const onRoute = routeColors && routeColors.length > 0;
-    const pts = railPoints(rail);
+    const pts = rail.freeStart ? railSpawnSegment(rail) : railPoints(rail);
 
     if (freeOnly && !rail.freeStart) continue;
     if (!showAll && !onRoute && !freeOnly) continue;
@@ -344,7 +361,7 @@ function updateInfo(rail) {
     Radio: ${radiusText}<br/>
     Tile: ${rail.tile || "—"}<br/>
     Circulación: inicio ${fmtPt(rail.trafficStart)} → fin ${fmtPt(rail.trafficEnd)}<br/>
-    Inicio libre: ${rail.freeStart ? "sí" : "no"}<br/>
+    Inicio libre (spawn OMSI): ${rail.freeStart ? "sí" : "no"}<br/>
     Vehículo: ${rail.vehicle ? "sí" : "no"}${legsHtml}
   `;
 }

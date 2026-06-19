@@ -45,7 +45,7 @@ def main() -> None:
         data = driver.execute_async_script(
             """
             const cb = arguments[arguments.length - 1];
-            import('./js/map_processor.js?v=18').then(async (m) => {
+            import('./js/map_processor.js?v=19').then(async (m) => {
               const manifest = await fetch('./e2e/manifest.json').then((r) => r.json());
               const base = './e2e/';
               const fileMap = new Map();
@@ -73,10 +73,11 @@ def main() -> None:
             raise SystemExit(data["error"])
 
         legs = data.get("pathLegs") or []
-        free = [l for l in legs if l.get("isFreeStart")]
-        print(f"Paths/sentidos: {len(legs)} | candidatos inicio libre: {len(free)}")
+        free = [l for l in legs if l.get("isOmsiSpawn")]
+        raw = [l for l in legs if l.get("isFreeStart")]
+        print(f"Paths/sentidos: {len(legs)} | candidatos ±10cm: {len(raw)} | spawn OMSI: {len(free)}")
         print(f"Stats: {json.dumps(data.get('stats', {}), indent=2)}")
-        print("\n--- CANDIDATOS (inicio sin otro path terminando ahí, ±10 cm) ---")
+        print("\n--- SPAWN OMSI (splines vehiculo) ---")
         for leg in sorted(free, key=lambda x: x["id"]):
             print(
                 f"  {leg['id']} [{leg.get('leg')}] {leg.get('direction')} "

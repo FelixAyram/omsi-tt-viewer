@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=18";
-import { readOmsiText } from "./omsi_text.js?v=18";
+} from "./omsi_browser.js?v=19";
+import { readOmsiText } from "./omsi_text.js?v=19";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=18";
+} from "./geometry.js?v=19";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -604,6 +604,113 @@ export function findFreeStartIds(rails, opts) {
   return ids;
 }
 
+function buildSplineAxisEnds(splines) {
+  const out = new Map();
+  for (const sp of splines.values()) {
+    if (sp.isInvis) continue;
+    const pts = sampleSplineRail(sp, sp.origin, { lateral: 0, height: 0 });
+    if (pts.length >= 2) out.set(sp.id, { start: pts[0], end: pts.at(-1) });
+  }
+  return out;
+}
+
+function nearestAxisSide(point, axis) {
+  if (!point || !axis) return null;
+  return distXZ(point, axis.start) <= distXZ(point, axis.end) ? "start" : "end";
+}
+
+/** Cierra inicios en cruces: carril reverse que termina en un extremo del spline. */
+function sameSplineReverseEndClosesForwardStart(entry, other, splineAxis) {
+  if (entry.kind !== "spline" || other.kind !== "spline") return false;
+  if (entry.elementId !== other.elementId) return false;
+  if (other.direction !== PATH_DIR_REVERSE || entry.direction !== PATH_DIR_FORWARD) return false;
+  const axis = splineAxis.get(entry.elementId);
+  if (!axis) return false;
+  return nearestAxisSide(entry.start, axis) === nearestAxisSide(other.end, axis);
+}
+
+function buildPathLegEntries(rails) {
+  const legs = [];
+  for (const rail of rails) {
+    for (const leg of enumeratePathLegs(rail)) {
+      legs.push({
+        railId: rail.id,
+        kind: rail.kind,
+        elementId: rail.elementId,
+        pathIdx: rail.pathIdx,
+        typ: rail.typ,
+        direction: rail.direction,
+        legKey: leg.leg,
+        start: leg.start,
+        end: leg.end,
+      });
+    }
+  }
+  return legs;
+}
+
+function isCirculationStartOpen(entry, allLegs, splineAxis, tolerance = CONNECT_TOL) {
+  for (const other of allLegs) {
+    if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
+    if (endpointsNear(other.end, entry.start, tolerance)) return false;
+    if (sameSplineReverseEndClosesForwardStart(entry, other, splineAxis)) return false;
+  }
+  return true;
+}
+
+function isCirculationStartConnected(entry, allLegs, splineAxis, tolerance = CONNECT_TOL) {
+  for (const other of allLegs) {
+    if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
+    if (endpointsNear(other.end, entry.start, tolerance)) return true;
+    if (sameSplineReverseEndClosesForwardStart(entry, other, splineAxis)) return true;
+  }
+  return false;
+}
+
+function isCirculationEndOpen(entry, allLegs, tolerance = CONNECT_TOL) {
+  for (const other of allLegs) {
+    if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
+    if (endpointsNear(other.start, entry.end, tolerance)) return false;
+  }
+  return true;
+}
+
+/**
+ * Spawn de tráfico OMSI en splines [spline] vehículo (typ 0):
+ * - reverse (1): inicio de circulación abierto (±10 cm + cierre en cruce mismo spline)
+ * - forward (0) sin carriles reverse en el spline: callejón — conectado al cruce y extremo opuesto libre
+ */
+export function findOmsiVehicleSpawnRails(rails, splines) {
+  const splineAxis = buildSplineAxisEnds(splines);
+  const allLegs = buildPathLegEntries(rails);
+  const reverseVehicleSpline = new Set();
+  for (const rail of rails) {
+    if (rail.kind !== "spline" || rail.typ !== VEHICLE_TYP) continue;
+    if (rail.direction === PATH_DIR_REVERSE) reverseVehicleSpline.add(rail.elementId);
+  }
+
+  const spawn = new Map();
+  for (const rail of rails) {
+    if (rail.kind !== "spline" || rail.typ !== VEHICLE_TYP) continue;
+    const sp = splines.get(rail.elementId);
+    if (!sp || sp.isSplineH || sp.isMirrored) continue;
+
+    const entry = allLegs.find((l) => l.railId === rail.id);
+    if (!entry) continue;
+
+    if (rail.direction === PATH_DIR_REVERSE) {
+      if (isCirculationStartOpen(entry, allLegs, splineAxis)) {
+        spawn.set(rail.id, { point: entry.start, atEnd: false });
+      }
+    } else if (rail.direction === PATH_DIR_FORWARD && !reverseVehicleSpline.has(rail.elementId)) {
+      if (isCirculationStartConnected(entry, allLegs, splineAxis) && isCirculationEndOpen(entry, allLegs)) {
+        spawn.set(rail.id, { point: entry.end, atEnd: true });
+      }
+    }
+  }
+  return spawn;
+}
+
 function busstopWorld(graph, stop, splines) {
   const tile = parseTileCoords(stop.tile);
   const origin = tile ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy) : { x: 0, z: 0 };
@@ -733,6 +840,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
             ...block,
             tile: tileName,
             origin,
+            isSplineH: tag === "[spline_h]",
             isInvis: block.path.toLowerCase().includes("invis"),
           });
         }
@@ -801,6 +909,8 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
         typ: meta.typ,
         vehicle: meta.typ === VEHICLE_TYP,
         direction: mirrorAdjustedDirection(meta.direction, sp.isMirrored),
+        isSplineH: sp.isSplineH ?? false,
+        isMirrored: sp.isMirrored ?? false,
         tile: sp.tile,
         points,
         start: points[0],
@@ -839,15 +949,17 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
   }
 
   const startCandidates = findFreeStartCandidates(rails);
-  const freeIds = findFreeStartIds(rails);
+  const omsiSpawn = findOmsiVehicleSpawnRails(rails, splines);
+  const freeIds = new Set(omsiSpawn.keys());
   for (const r of rails) {
     const ep = getTrafficEndpoints(r);
     r.trafficStart = ep.start;
     r.trafficEnd = ep.end;
     r.directionLabel = directionLabel(r.direction);
     r.freeStart = freeIds.has(r.id);
-    const openLeg = startCandidates.find((c) => c.railId === r.id && c.isFreeStart);
-    if (openLeg) r.trafficStart = openLeg.start;
+    r.omsiSpawn = freeIds.has(r.id);
+    const spawn = omsiSpawn.get(r.id);
+    if (spawn) r.trafficStart = spawn.point;
   }
 
   const pathLegs = startCandidates.map((c) => ({
@@ -858,6 +970,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     start: c.start,
     end: c.end,
     isFreeStart: c.isFreeStart,
+    isOmsiSpawn: omsiSpawn.has(c.railId),
     incomingCount: c.incomingCount,
   }));
 
@@ -947,6 +1060,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     stats: {
       railCount: rails.length,
       freeStartCount: freeIds.size,
+      omsiSpawnCount: freeIds.size,
       freeLegCount: startCandidates.filter((c) => c.isFreeStart).length,
       pathLegCount: startCandidates.length,
       connectToleranceM: CONNECT_TOL,
