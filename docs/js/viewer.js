@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=19";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=19";
+import { APP_VERSION } from "./version.js?v=20";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=20";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=19";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=19";
-import { distPointPolyline } from "./geometry.js?v=19";
+} from "./omsi_browser.js?v=20";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=20";
+import { distPointPolyline } from "./geometry.js?v=20";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=19";
+} from "./debug.js?v=20";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -134,7 +134,7 @@ function railPoints(rail) {
   return [];
 }
 
-/** Tramo verde desde el punto de spawn OMSI hasta el final de circulación. */
+/** Tramo verde desde el punto de spawn OMSI hasta el fin de circulación. */
 function railSpawnSegment(rail) {
   const pts = railPoints(rail);
   if (!rail.freeStart || !rail.trafficStart || pts.length < 2) return pts;
@@ -147,8 +147,10 @@ function railSpawnSegment(rail) {
       bestIdx = i;
     }
   }
-  if (rail.direction === 1) return pts.slice(bestIdx);
-  return pts.slice(0, bestIdx + 1);
+  // Spawn en el extremo final de la polilínea (backward o callejón forward): cruce → spawn
+  if (bestIdx >= pts.length - 1) return pts.slice(0, bestIdx + 1);
+  // Spawn en el extremo inicial: desde ahí hasta el final
+  return pts.slice(bestIdx);
 }
 
 function resizeCanvas() {
