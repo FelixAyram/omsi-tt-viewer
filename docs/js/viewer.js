@@ -1,3 +1,4 @@
+import { APP_VERSION } from "./version.js?v=12";
 import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=12";
 import {
   pickOmsiRoot,
@@ -17,6 +18,11 @@ import {
   describeFsaMapHandle,
   appendSection,
 } from "./debug.js?v=12";
+
+const appVersionEl = document.getElementById("appVersion");
+if (appVersionEl) {
+  appVersionEl.textContent = `Versión ${APP_VERSION}`;
+}
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");

@@ -39,6 +39,14 @@ header p {
   font-size: 0.92rem;
 }
 
+.app-version {
+  font-size: 0.72rem;
+  color: var(--muted);
+  opacity: 0.85;
+  margin-top: 6px;
+  letter-spacing: 0.03em;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(260px, 320px) 1fr;
