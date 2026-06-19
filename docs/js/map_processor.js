@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=21";
-import { readOmsiText } from "./omsi_text.js?v=21";
+} from "./omsi_browser.js?v=23";
+import { readOmsiText } from "./omsi_text.js?v=23";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=21";
+} from "./geometry.js?v=23";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -658,55 +658,27 @@ function isCirculationStartOpen(entry, allLegs, splineAxis, tolerance = CONNECT_
   return true;
 }
 
-function isCirculationStartConnected(entry, allLegs, splineAxis, tolerance = CONNECT_TOL) {
-  for (const other of allLegs) {
-    if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
-    if (endpointsNear(other.end, entry.start, tolerance)) return true;
-    if (sameSplineReverseEndClosesForwardStart(entry, other, splineAxis)) return true;
-  }
-  return false;
-}
-
-function isCirculationEndOpen(entry, allLegs, tolerance = CONNECT_TOL) {
-  for (const other of allLegs) {
-    if (other.railId === entry.railId && other.legKey === entry.legKey) continue;
-    if (endpointsNear(other.start, entry.end, tolerance)) return false;
-  }
-  return true;
-}
-
 /**
- * Spawn de tráfico OMSI en splines [spline] vehículo (typ 0):
- * - reverse (1): inicio de circulación abierto (±10 cm + cierre en cruce mismo spline)
- * - forward (0) sin carriles reverse en el spline: callejón — conectado al cruce y extremo opuesto libre
+ * Spawn tráfico OMSI en splines [spline] vehículo (typ 0):
+ * - Solo sentido efectivo backward (direction=1, o forward+mirror en .map)
+ * - Inicio de circulación abierto (±10 cm; cierra reverse→forward mismo spline)
  */
 export function findOmsiVehicleSpawnRails(rails, splines) {
   const splineAxis = buildSplineAxisEnds(splines);
   const allLegs = buildPathLegEntries(rails);
-  const reverseVehicleSpline = new Set();
-  for (const rail of rails) {
-    if (rail.kind !== "spline" || rail.typ !== VEHICLE_TYP) continue;
-    if (rail.direction === PATH_DIR_REVERSE) reverseVehicleSpline.add(rail.elementId);
-  }
-
   const spawn = new Map();
+
   for (const rail of rails) {
     if (rail.kind !== "spline" || rail.typ !== VEHICLE_TYP) continue;
     const sp = splines.get(rail.elementId);
-    if (!sp || sp.isSplineH || sp.isMirrored) continue;
+    if (!sp || sp.isSplineH) continue;
 
     const entry = allLegs.find((l) => l.railId === rail.id);
     if (!entry) continue;
 
-    if (rail.direction === PATH_DIR_REVERSE) {
-      if (isCirculationStartOpen(entry, allLegs, splineAxis)) {
-        spawn.set(rail.id, { point: entry.start, atEnd: false });
-      }
-    } else if (rail.direction === PATH_DIR_FORWARD && !reverseVehicleSpline.has(rail.elementId)) {
-      if (isCirculationStartConnected(entry, allLegs, splineAxis) && isCirculationEndOpen(entry, allLegs)) {
-        spawn.set(rail.id, { point: entry.end, atEnd: true });
-      }
-    }
+    if (rail.direction !== PATH_DIR_REVERSE) continue;
+    if (!isCirculationStartOpen(entry, allLegs, splineAxis)) continue;
+    spawn.set(rail.id, { point: entry.start, atEnd: false });
   }
   return spawn;
 }

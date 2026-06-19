@@ -45,7 +45,7 @@ def main() -> None:
         data = driver.execute_async_script(
             """
             const cb = arguments[arguments.length - 1];
-            import('./js/map_processor.js?v=19').then(async (m) => {
+            import('./js/map_processor.js?v=23').then(async (m) => {
               const manifest = await fetch('./e2e/manifest.json').then((r) => r.json());
               const base = './e2e/';
               const fileMap = new Map();
