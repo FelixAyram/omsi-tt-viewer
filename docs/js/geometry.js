@@ -15,7 +15,8 @@ export function normalizeDir(v) {
 
 export function perpOffset(dir, lateral) {
   const n = normalizeDir(dir);
-  return { x: -n.z * lateral, z: n.x * lateral };
+  // Signo alineado con OMSI/Unity (SampleSplineAttachmentFrame local X).
+  return { x: n.z * lateral, z: -n.x * lateral };
 }
 
 export function rotateY(v, rotDeg) {
