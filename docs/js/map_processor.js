@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=32";
-import { readOmsiText } from "./omsi_text.js?v=32";
+} from "./omsi_browser.js?v=33";
+import { readOmsiText } from "./omsi_text.js?v=33";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=32";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=32";
+} from "./geometry.js?v=33";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=33";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -26,8 +26,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=32";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=32";
+} from "./rail_builder.js?v=33";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=33";
 
 const TILE_SIZE = 300;
 const CONNECT_TOL = 0.1;

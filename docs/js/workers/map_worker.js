@@ -1,7 +1,7 @@
 /**
  * Web Worker: parseo .sli/.sco y generación de rieles por lotes.
  */
-import { buildSplineRails, buildScoRails, parseSliPaths, parseScoPaths } from "../rail_builder.js?v=31";
+import { buildSplineRails, buildScoRails, parseSliPaths, parseScoPaths } from "../rail_builder.js?v=33";
 
 self.onmessage = (ev) => {
   const { id, type, items, text, key } = ev.data ?? {};

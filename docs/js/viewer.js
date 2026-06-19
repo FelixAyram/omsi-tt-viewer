@@ -1,14 +1,20 @@
-import { APP_VERSION } from "./version.js?v=32";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=32";
+import { APP_VERSION } from "./version.js?v=33";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=33";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=32";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=32";
-import { distPointPolyline } from "./geometry.js?v=32";
+} from "./omsi_browser.js?v=33";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=33";
+import {
+  buildRailSpatialIndex,
+  queryVisibleRails,
+  findRailNear,
+  drawRailsBatched,
+  visibleWorldRect,
+} from "./map_renderer.js?v=33";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +24,10 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=32";
+} from "./debug.js?v=33";
+
+const LARGE_MAP_RAILS = 15000;
+const LITE_MODE_RAILS = 8000;
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -86,10 +95,14 @@ function alertWithDebug(err, context) {
 }
 
 let data = null;
+let railIndex = null;
 let loadTiming = null;
 let view = { scale: 1, offsetX: 0, offsetY: 0 };
 let dragging = false;
-let lastPointer = { x: 0, y: 0 };
+let panAnchor = null;
+let panSnapshot = null;
+let drawPending = false;
+let lastDrawnVisible = 0;
 let selectedRailId = null;
 let selectedRoutes = new Set();
 let omsiRoot = null;
@@ -129,6 +142,58 @@ function updateGlobalCfgUi() {
   }
 }
 
+function simplifyPoints(pts, scale) {
+  if (pts.length <= 2) return pts;
+  if (scale < 0.4) return [pts[0], pts.at(-1)];
+  if (scale < 1.5 && pts.length > 6) {
+    const out = [pts[0]];
+    for (let i = 2; i < pts.length - 1; i += 2) out.push(pts[i]);
+    out.push(pts.at(-1));
+    return out;
+  }
+  if (scale < 4 && pts.length > 12) {
+    const step = Math.max(2, Math.floor(pts.length / 8));
+    const out = [pts[0]];
+    for (let i = step; i < pts.length - 1; i += step) out.push(pts[i]);
+    out.push(pts.at(-1));
+    return out;
+  }
+  return pts;
+}
+
+function scheduleDraw() {
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => {
+    drawPending = false;
+    draw();
+  });
+}
+
+function snapshotCanvas() {
+  panSnapshot = document.createElement("canvas");
+  panSnapshot.width = canvas.width;
+  panSnapshot.height = canvas.height;
+  const sctx = panSnapshot.getContext("2d");
+  if (sctx) sctx.drawImage(canvas, 0, 0);
+}
+
+function drawPanPreview(dx, dy) {
+  if (!ctx || !panSnapshot) return;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#12151c";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(panSnapshot, dx * dpr, dy * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+function isLiteMode() {
+  const n = data?.stats?.railCount ?? data?.rails?.length ?? 0;
+  return n >= LITE_MODE_RAILS;
+}
+
 function railPoints(rail) {
   if (rail.points?.length >= 2) return rail.points;
   if (rail.start && rail.end) return [rail.start, rail.end];
@@ -164,7 +229,7 @@ function resizeCanvas() {
   canvas.style.width = `${w}px`;
   canvas.style.height = `${h}px`;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  draw();
+  scheduleDraw();
 }
 
 /** Espejo en X al dibujar (vista cenital = editor OMSI; curvas a la derecha). */
@@ -220,33 +285,23 @@ function buildRouteRailMap() {
 }
 
 function findRailAt(sx, sy, threshold = 8) {
-  if (!data?.rails) return null;
+  if (!data?.rails || !railIndex) return null;
   const { x, z } = screenToWorld(sx, sy);
   const worldThreshold = threshold / view.scale;
-  let best = null;
-  let bestD = worldThreshold;
-  for (const rail of data.rails) {
-    const pts = railPoints(rail);
-    if (pts.length < 2) continue;
-    const d = distPointPolyline(x, z, pts);
-    if (d < bestD) {
-      bestD = d;
-      best = rail;
-    }
-  }
-  return best;
+  return findRailNear(railIndex, x, z, worldThreshold);
 }
 
-function strokeRail(points) {
-  if (points.length < 2) return;
-  ctx.beginPath();
-  const first = worldToScreen(points[0][0], points[0][2]);
-  ctx.moveTo(first.x, first.y);
-  for (let i = 1; i < points.length; i += 1) {
-    const p = worldToScreen(points[i][0], points[i][2]);
-    ctx.lineTo(p.x, p.y);
-  }
-  ctx.stroke();
+function prepareVisibleItems() {
+  const w = canvas.clientWidth;
+  const h = canvas.clientHeight;
+  const worldRect = visibleWorldRect(view, w, h, VIEW_MIRROR_X);
+  const lite = isLiteMode();
+  const raw = queryVisibleRails(railIndex, worldRect);
+  return raw.map(({ rail, pts }) => {
+    let line = rail.freeStart ? railSpawnSegment(rail) : pts;
+    if (lite) line = simplifyPoints(line, view.scale);
+    return { rail, pts: line };
+  });
 }
 
 function draw() {
@@ -268,57 +323,49 @@ function draw() {
   const routeRails = buildRouteRailMap();
   const showAll = showAllRails.checked;
   const freeOnly = showFreeOnly.checked;
+  const lite = isLiteMode();
+  const visibleItems = prepareVisibleItems();
 
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
+  const drawStyles = {
+    railTyp: RAIL_TYP,
+    base: { width: lite ? 1 : Math.max(1.2, 1.5 * view.scale * 0.04) },
+    route: { width: lite ? 2 : Math.max(4, 3 * view.scale * 0.08) },
+    freeStart: { width: lite ? 1.5 : Math.max(3, 2.5 * view.scale * 0.06), stroke: FREE_START.stroke },
+    selected: { width: 4, stroke: SELECTED.stroke },
+  };
 
-  for (const rail of data.rails) {
-    const routeColors = routeRails.get(rail.id);
-    const onRoute = routeColors && routeColors.length > 0;
-    const pts = rail.freeStart ? railSpawnSegment(rail) : railPoints(rail);
-
-    if (freeOnly && !rail.freeStart) continue;
-    if (!showAll && !onRoute && !freeOnly) continue;
-    if (!showAll && freeOnly && !rail.freeStart && !onRoute) continue;
-
-    if (onRoute) {
-      ctx.lineWidth = Math.max(4, 3 * view.scale * 0.08);
-      ctx.strokeStyle = routeColors[0];
-      ctx.shadowColor = routeColors[0];
-      ctx.shadowBlur = 6;
-    } else if (rail.freeStart && (showAll || freeOnly)) {
-      ctx.lineWidth = Math.max(3, 2.5 * view.scale * 0.06);
-      ctx.strokeStyle = FREE_START.stroke;
-      ctx.shadowColor = FREE_START.glow;
-      ctx.shadowBlur = 8;
-    } else {
-      const typ = RAIL_TYP[rail.typ] || RAIL_TYP[0];
-      ctx.lineWidth = Math.max(1.2, 1.5 * view.scale * 0.04);
-      ctx.strokeStyle = typ.stroke;
-      ctx.shadowBlur = 0;
-    }
-
-    if (selectedRailId === rail.id) {
-      ctx.lineWidth += 2;
-      ctx.strokeStyle = SELECTED.stroke;
-    }
-
-    strokeRail(pts);
-    ctx.shadowBlur = 0;
-  }
+  lastDrawnVisible = drawRailsBatched(ctx, visibleItems, {
+    worldToScreen,
+    routeRails,
+    showAll,
+    freeOnly,
+    selectedRailId,
+    styles: drawStyles,
+    liteMode: lite,
+  });
 
   if (showBusstops.checked && data.busstops) {
-    const r = Math.max(5, 4 * view.scale * 0.05);
+    const r = Math.max(4, 4 * view.scale * 0.05);
     for (const stop of data.busstops) {
       const p = worldToScreen(stop.x, stop.z);
+      if (p.x < -20 || p.y < -20 || p.x > w + 20 || p.y > h + 20) continue;
       ctx.fillStyle = BUSSTOP.fill;
       ctx.strokeStyle = BUSSTOP.stroke;
       ctx.lineWidth = 1.5;
+      ctx.shadowBlur = 0;
       ctx.beginPath();
       ctx.rect(p.x - r, p.y - r, r * 2, r * 2);
       ctx.fill();
       ctx.stroke();
     }
+  }
+
+  const total = data.stats?.railCount ?? data.rails.length;
+  if (lastDrawnVisible === 0 && total >= LARGE_MAP_RAILS && !showAll && selectedRoutes.size === 0) {
+    ctx.fillStyle = "#8b95a8";
+    ctx.font = "14px Segoe UI, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Mapa grande — activa capas o marca rutas .ttr para dibujar rieles", w / 2, h / 2);
   }
 }
 
@@ -328,8 +375,9 @@ function updateStats() {
     return;
   }
   const s = data.stats || {};
+  const total = s.railCount ?? data.rails.length;
   let text =
-    `${data.mapName} · ${s.railCount ?? data.rails.length} rieles · ` +
+    `${data.mapName} · ${total} rieles · ` +
     `${s.freeStartCount ?? 0} libres · ${s.busstopCount ?? data.busstops.length} paradas · ` +
     `${s.routeCount ?? data.routes.length} rutas`;
   if (s.sliMissing > 0 || s.scoMissing > 0) {
@@ -340,6 +388,9 @@ function updateStats() {
   }
   if (s.parallelWorkers > 0) {
     text += ` · ${s.parallelWorkers}/${s.parallelPoolSize ?? s.parallelWorkers} workers`;
+  }
+  if (lastDrawnVisible > 0 && total >= LARGE_MAP_RAILS) {
+    text += ` · vista ${lastDrawnVisible}/${total} rieles`;
   }
   statsEl.textContent = text;
 }
@@ -394,7 +445,7 @@ function populateRoutes() {
   selectedRoutes.clear();
   if (!data?.routes?.length) {
     routeList.innerHTML = "<p class='muted'>Sin rutas (.ttr) en este mapa</p>";
-    draw();
+    scheduleDraw();
     return;
   }
 
@@ -416,7 +467,7 @@ function populateRoutes() {
     cb.addEventListener("change", () => {
       if (cb.checked) selectedRoutes.add(route.id);
       else selectedRoutes.delete(route.id);
-      draw();
+      scheduleDraw();
     });
     wrap.appendChild(label);
 
@@ -472,6 +523,16 @@ function formatLoadTiming(t) {
 async function applyData(json, timing = null) {
   data = json;
   selectedRailId = null;
+  panSnapshot = null;
+  panAnchor = null;
+  const railCount = json.stats?.railCount ?? json.rails?.length ?? 0;
+  if (railCount >= LARGE_MAP_RAILS) {
+    showAllRails.checked = false;
+    showFreeOnly.checked = false;
+  } else {
+    showAllRails.checked = true;
+  }
+  railIndex = buildRailSpatialIndex(json.rails || []);
   fitBounds(data.bounds);
   const drawStart = performance.now();
   populateRoutes();
@@ -742,13 +803,14 @@ fileInput.addEventListener("change", async (ev) => {
 [showAllRails, showFreeOnly, showBusstops].forEach((el) => {
   el.addEventListener("change", () => {
     if (showFreeOnly.checked) showAllRails.checked = true;
-    draw();
+    scheduleDraw();
+    updateStats();
   });
 });
 
 resetViewBtn.addEventListener("click", () => {
   if (data?.bounds) fitBounds(data.bounds);
-  draw();
+  scheduleDraw();
 });
 
 canvas.addEventListener("wheel", (ev) => {
@@ -760,37 +822,56 @@ canvas.addEventListener("wheel", (ev) => {
   const after = screenToWorld(ev.offsetX, ev.offsetY);
   view.offsetX += before.x - after.x;
   view.offsetY += before.z - after.z;
-  draw();
+  scheduleDraw();
 }, { passive: false });
 
 canvas.addEventListener("pointerdown", (ev) => {
   dragging = true;
-  lastPointer = { x: ev.clientX, y: ev.clientY };
+  panAnchor = {
+    x: ev.clientX,
+    y: ev.clientY,
+    offsetX: view.offsetX,
+    offsetY: view.offsetY,
+  };
+  snapshotCanvas();
   canvas.setPointerCapture(ev.pointerId);
 });
 
 canvas.addEventListener("pointermove", (ev) => {
-  if (!dragging) return;
-  const dx = ev.clientX - lastPointer.x;
-  const dy = ev.clientY - lastPointer.y;
-  // Con espejo X, screenToWorld invierte el eje horizontal respecto al pan estándar.
-  const panX = VIEW_MIRROR_X ? dx / view.scale : -dx / view.scale;
-  view.offsetX += panX;
-  view.offsetY -= dy / view.scale;
-  lastPointer = { x: ev.clientX, y: ev.clientY };
-  draw();
+  if (!dragging || !panAnchor) return;
+  const dx = ev.clientX - panAnchor.x;
+  const dy = ev.clientY - panAnchor.y;
+  drawPanPreview(dx, dy);
 });
 
 canvas.addEventListener("pointerup", (ev) => {
-  if (!dragging) return;
-  const moved = Math.hypot(ev.clientX - lastPointer.x, ev.clientY - lastPointer.y);
+  if (!dragging || !panAnchor) return;
+  const dx = ev.clientX - panAnchor.x;
+  const dy = ev.clientY - panAnchor.y;
+  const moved = Math.hypot(dx, dy);
   dragging = false;
-  if (moved < 4) {
-    const rail = findRailAt(ev.offsetX, ev.offsetY);
-    selectedRailId = rail?.id || null;
-    updateInfo(rail);
-    draw();
+  panSnapshot = null;
+
+  if (moved >= 4) {
+    const panX = VIEW_MIRROR_X ? dx / view.scale : -dx / view.scale;
+    view.offsetX = panAnchor.offsetX + panX;
+    view.offsetY = panAnchor.offsetY - dy / view.scale;
+    panAnchor = null;
+    scheduleDraw();
+    return;
   }
+
+  panAnchor = null;
+  const rail = findRailAt(ev.offsetX, ev.offsetY);
+  selectedRailId = rail?.id || null;
+  updateInfo(rail);
+  scheduleDraw();
+});
+
+canvas.addEventListener("pointercancel", () => {
+  dragging = false;
+  panSnapshot = null;
+  panAnchor = null;
 });
 
 function buildLegend() {
