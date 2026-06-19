@@ -1,6 +1,6 @@
 /**
  * Acceso lazy a instalación OMSI 2:
- * 1) Validar raíz y listar solo maps/*/global.cfg
+ * 1) Validar raíz y listar solo global.cfg en maps/<nombre>/
  * 2) Al elegir mapa: cargar tiles/TTData + .sli/.sco referenciados
  */
 
@@ -56,7 +56,7 @@ export async function validateOmsiRootHandle(rootHandle) {
   }
 }
 
-/** Solo escanea maps/*/global.cfg (rápido). */
+/** Solo escanea global.cfg en cada subcarpeta de maps/ (rápido). */
 export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
   onProgress?.("Listando mapas en maps/…");
   const mapsDir = await rootHandle.getDirectoryHandle("maps");
