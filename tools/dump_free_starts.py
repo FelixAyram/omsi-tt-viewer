@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lista IDs de inicio libre del procesador web (fixture E2E)."""
+"""Lista todos los path (.sli + .sco) con inicio/fin y candidatos a inicio libre (±10 cm)."""
 from __future__ import annotations
 
 import json
@@ -21,6 +21,12 @@ class Handler(SimpleHTTPRequestHandler):
         pass
 
 
+def fmt_pt(p) -> str:
+    if not p:
+        return "—"
+    return f"({p[0]:.2f}, {p[2]:.2f})"
+
+
 def main() -> None:
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
@@ -39,7 +45,7 @@ def main() -> None:
         data = driver.execute_async_script(
             """
             const cb = arguments[arguments.length - 1];
-            import('./js/map_processor.js?v=17').then(async (m) => {
+            import('./js/map_processor.js?v=18').then(async (m) => {
               const manifest = await fetch('./e2e/manifest.json').then((r) => r.json());
               const base = './e2e/';
               const fileMap = new Map();
@@ -59,14 +65,32 @@ def main() -> None:
                 () => {},
                 { globalCfgFile: fileMap.get(globalKey) },
               );
-              const free = json.rails.filter((r) => r.freeStart).map((r) => r.id).sort();
-              cb({ freeCount: free.length, free });
+              cb(json);
             }).catch((e) => cb({ error: String(e) }));
             """
         )
         if data.get("error"):
             raise SystemExit(data["error"])
-        print(json.dumps(data, indent=2))
+
+        legs = data.get("pathLegs") or []
+        free = [l for l in legs if l.get("isFreeStart")]
+        print(f"Paths/sentidos: {len(legs)} | candidatos inicio libre: {len(free)}")
+        print(f"Stats: {json.dumps(data.get('stats', {}), indent=2)}")
+        print("\n--- CANDIDATOS (inicio sin otro path terminando ahí, ±10 cm) ---")
+        for leg in sorted(free, key=lambda x: x["id"]):
+            print(
+                f"  {leg['id']} [{leg.get('leg')}] {leg.get('direction')} "
+                f"inicio {fmt_pt(leg.get('start'))} -> fin {fmt_pt(leg.get('end'))}"
+            )
+        print("\n--- TODOS LOS PATHS ---")
+        for leg in sorted(legs, key=lambda x: (x["id"], x.get("leg", ""))):
+            mark = " LIBRE" if leg.get("isFreeStart") else ""
+            inc = leg.get("incomingCount", 0)
+            print(
+                f"  {leg['id']} [{leg.get('leg')}] {leg.get('kind')} {leg.get('direction')} "
+                f"inicio {fmt_pt(leg.get('start'))} -> fin {fmt_pt(leg.get('end'))}"
+                f" | entradas: {inc}{mark}"
+            )
     finally:
         driver.quit()
         srv.shutdown()

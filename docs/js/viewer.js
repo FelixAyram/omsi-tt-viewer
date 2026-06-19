@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=17";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=17";
+import { APP_VERSION } from "./version.js?v=18";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=18";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=17";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=17";
-import { distPointPolyline } from "./geometry.js?v=17";
+} from "./omsi_browser.js?v=18";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=18";
+import { distPointPolyline } from "./geometry.js?v=18";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=17";
+} from "./debug.js?v=18";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -311,6 +311,11 @@ function updateStats() {
   statsEl.textContent = text;
 }
 
+function fmtPt(p) {
+  if (!p) return "—";
+  return `(${p[0].toFixed(2)}, ${p[2].toFixed(2)})`;
+}
+
 function updateInfo(rail) {
   if (!rail) {
     infoEl.innerHTML = "<em>Clic en un riel para ver detalles</em>";
@@ -321,14 +326,26 @@ function updateInfo(rail) {
     rail.radius && Math.abs(rail.radius) > 1e-6
       ? `${Math.abs(rail.radius).toFixed(2)} m`
       : "recto";
+  const legs = data?.pathLegs?.filter((l) => l.id === rail.id) ?? [];
+  const legsHtml = legs.length
+    ? legs
+        .map(
+          (l) =>
+            `<br/>&nbsp;&nbsp;${l.leg} (${l.direction}): inicio ${fmtPt(l.start)} → fin ${fmtPt(l.end)}` +
+            `${l.isFreeStart ? " <strong>libre</strong>" : ""}`,
+        )
+        .join("")
+    : "";
   infoEl.innerHTML = `
     <strong>${rail.id}</strong><br/>
     Tipo: ${typLabel}<br/>
+    Sentido: ${rail.directionLabel || "forward"}<br/>
     Longitud: ${rail.length} m<br/>
     Radio: ${radiusText}<br/>
     Tile: ${rail.tile || "—"}<br/>
+    Circulación: inicio ${fmtPt(rail.trafficStart)} → fin ${fmtPt(rail.trafficEnd)}<br/>
     Inicio libre: ${rail.freeStart ? "sí" : "no"}<br/>
-    Vehículo: ${rail.vehicle ? "sí" : "no"}
+    Vehículo: ${rail.vehicle ? "sí" : "no"}${legsHtml}
   `;
 }
 
