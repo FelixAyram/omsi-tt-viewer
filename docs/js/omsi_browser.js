@@ -53,35 +53,79 @@ function parseGlobalName(text) {
   return m ? m[1].trim() : "";
 }
 
+async function ensureReadPermission(handle) {
+  if (typeof handle.queryPermission !== "function") return "granted";
+  let perm = await handle.queryPermission({ mode: "read" });
+  if (perm !== "granted" && typeof handle.requestPermission === "function") {
+    perm = await handle.requestPermission({ mode: "read" });
+  }
+  return perm;
+}
+
 async function getFileHandleInsensitive(dirHandle, baseName) {
+  const want = baseName.toLowerCase();
+  const variants = new Set([
+    baseName,
+    baseName.toLowerCase(),
+    baseName.toUpperCase(),
+    "Global.cfg",
+    "GLOBAL.CFG",
+  ]);
+  for (const name of variants) {
+    try {
+      return await dirHandle.getFileHandle(name);
+    } catch {
+      // siguiente variante
+    }
+  }
   try {
-    return await dirHandle.getFileHandle(baseName);
-  } catch {
     for await (const [name, handle] of dirHandle.entries()) {
-      if (handle.kind === "file" && name.toLowerCase() === baseName.toLowerCase()) {
+      if (handle.kind === "file" && name.toLowerCase() === want) {
         return handle;
       }
     }
-    throw new Error(`No se encontró ${baseName}`);
+  } catch {
+    // entries puede fallar en subcarpetas sin permiso explícito
   }
+  throw new Error(`No se encontró ${baseName}`);
 }
 
-async function getDirHandle(rootHandle, relPath) {
+async function navigateFromRoot(rootHandle, relPath) {
+  const parts = normPath(relPath).split("/").filter(Boolean);
   let cur = rootHandle;
-  for (const part of relPath.replace(/\\/g, "/").split("/").filter(Boolean)) {
-    cur = await cur.getDirectoryHandle(part);
+  for (const part of parts) {
+    const next = await getChildDirHandle(cur, part);
+    if (!next) {
+      throw new Error(`No se encontró: ${part} (ruta ${parts.join("/")})`);
+    }
+    cur = next;
+    const perm = await ensureReadPermission(cur);
+    if (perm !== "granted") {
+      throw new Error(`Sin permiso de lectura en ${part}`);
+    }
   }
   return cur;
 }
 
 async function readFileFromRoot(rootHandle, relPath) {
-  const parts = relPath.replace(/\\/g, "/").split("/").filter(Boolean);
-  let cur = rootHandle;
-  for (let i = 0; i < parts.length - 1; i += 1) {
-    cur = await cur.getDirectoryHandle(parts[i]);
+  const parts = normPath(relPath).split("/").filter(Boolean);
+  if (parts.length < 2) {
+    throw new Error(`Ruta inválida: ${relPath}`);
   }
-  const fh = await cur.getFileHandle(parts[parts.length - 1]);
+  const dirPath = parts.slice(0, -1).join("/");
+  const fileName = parts[parts.length - 1];
+  const dirHandle = await navigateFromRoot(rootHandle, dirPath);
+  const fh = await getFileHandleInsensitive(dirHandle, fileName);
   return fh.getFile();
+}
+
+async function readTextFromRoot(rootHandle, relPath) {
+  const file = await readFileFromRoot(rootHandle, relPath);
+  return file.text();
+}
+
+async function getDirHandle(rootHandle, relPath) {
+  return navigateFromRoot(rootHandle, relPath);
 }
 
 async function walkDirectoryToMap(dirHandle, prefix, fileMap) {
@@ -119,10 +163,13 @@ export async function validateOmsiRootHandle(rootHandle) {
 // Solo escanea global.cfg en cada subcarpeta de maps/ (rápido).
 export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
   onProgress?.("Listando mapas en maps/…");
+  await ensureReadPermission(rootHandle);
   const mapsDir = await getChildDirHandle(rootHandle, "maps", "Maps");
   if (!mapsDir) {
     throw new Error("No se encontró la carpeta maps/ en la instalación OMSI 2.");
   }
+  await ensureReadPermission(mapsDir);
+  const mapsDirName = mapsDir.name;
   const entries = [];
   const scanLog = [];
   for await (const [folderName, child] of mapsDir.entries()) {
@@ -134,26 +181,41 @@ export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
       scanLog.push(`${folderName}/ [omitida, empieza por _]`);
       continue;
     }
+    let label = folderName;
+    let readOk = false;
+    const cfgPath = `${mapsDirName}/${folderName}/global.cfg`;
     try {
-      const gf = await getFileHandleInsensitive(child, "global.cfg");
-      const file = await gf.getFile();
-      const cfgName = parseGlobalName(await file.text());
-      let label = folderName;
+      const text = await readTextFromRoot(rootHandle, cfgPath);
+      const cfgName = parseGlobalName(text);
       if (cfgName && cfgName.toLowerCase() !== folderName.toLowerCase()) {
         label = `${folderName} — ${cfgName}`;
       }
-      entries.push({ dir: `maps/${folderName}`, folder: folderName, label });
-      scanLog.push(`${folderName}/ → global.cfg OK`);
+      readOk = true;
+      scanLog.push(`${folderName}/ → global.cfg OK (desde raíz)`);
     } catch (err) {
-      scanLog.push(`${folderName}/ → sin global.cfg (${err.message})`);
+      scanLog.push(`${folderName}/ → global.cfg: ${err.name || "Error"}: ${err.message}`);
     }
+    entries.push({ dir: `maps/${folderName}`, folder: folderName, label, cfgReadable: readOk });
   }
   if (!entries.length) {
-    const err = new Error("No se encontraron mapas en maps/ (global.cfg por carpeta).");
+    const err = new Error("maps/ no tiene subcarpetas de mapas.");
     err.scanLog = scanLog;
     throw err;
   }
-  return entries.sort((a, b) => a.folder.localeCompare(b.folder, undefined, { sensitivity: "base" }));
+  const readable = entries.filter((e) => e.cfgReadable).length;
+  if (readable === 0) {
+    scanLog.push("");
+    scanLog.push(
+      "Aviso: no se pudo leer global.cfg en ningún mapa, pero se listan las carpetas. " +
+        "Prueba «Elegir carpeta de mapa…» si al cargar falla.",
+    );
+  }
+  return {
+    catalog: entries
+      .map(({ dir, folder, label }) => ({ dir, folder, label }))
+      .sort((a, b) => a.folder.localeCompare(b.folder, undefined, { sensitivity: "base" })),
+    scanLog,
+  };
 }
 
 // Carga carpeta del mapa + .sli y .sco referenciados bajo demanda.
@@ -199,6 +261,10 @@ export async function pickOmsiRoot(onProgress = null) {
         mode: "read",
       });
       onProgress?.("Validando instalación OMSI 2…");
+      const perm = await ensureReadPermission(handle);
+      if (perm !== "granted") {
+        throw new Error("Se necesita permiso de lectura en la carpeta OMSI 2.");
+      }
       await validateOmsiRootHandle(handle);
       return { mode: "fsa", label: handle.name, rootHandle: handle };
     } catch (err) {
@@ -211,13 +277,23 @@ export async function pickOmsiRoot(onProgress = null) {
 
 // Valida carpeta de un mapa (global.cfg + tiles).
 export async function validateMapFolderHandle(mapHandle) {
-  await getFileHandleInsensitive(mapHandle, "global.cfg");
+  await ensureReadPermission(mapHandle);
+  let hasGlobal = false;
   let hasTile = false;
+  try {
+    await getFileHandleInsensitive(mapHandle, "global.cfg");
+    hasGlobal = true;
+  } catch {
+    // intentar vía entries
+  }
   for await (const [name, handle] of mapHandle.entries()) {
-    if (handle.kind === "file" && /tile_-?\d+_-?\d+\.map$/i.test(name)) {
-      hasTile = true;
-      break;
+    if (handle.kind === "file") {
+      if (name.toLowerCase() === "global.cfg") hasGlobal = true;
+      if (/tile_-?\d+_-?\d+\.map$/i.test(name)) hasTile = true;
     }
+  }
+  if (!hasGlobal) {
+    throw new Error("No hay global.cfg en la carpeta elegida.");
   }
   if (!hasTile) {
     throw new Error("La carpeta no contiene tiles tile_*.map. Elige la carpeta del mapa (ej. maps/Test_Lat30).");

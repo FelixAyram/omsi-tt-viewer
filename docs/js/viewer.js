@@ -1,12 +1,12 @@
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=7";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=8";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=7";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=7";
-import { distPointPolyline } from "./geometry.js?v=7";
+} from "./omsi_browser.js?v=8";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=8";
+import { distPointPolyline } from "./geometry.js?v=8";
 import {
   initDebugPanel,
   debugClear,
@@ -16,7 +16,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=7";
+} from "./debug.js?v=8";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
@@ -443,11 +443,17 @@ async function onOmsiFolderPicked(result) {
 
     let catalog;
     if (result.mode === "fsa") {
-      catalog = await scanMapsCatalogFromHandle(result.rootHandle, setProgress);
+      const scanResult = await scanMapsCatalogFromHandle(result.rootHandle, setProgress);
+      catalog = scanResult.catalog;
       debugPrint(
         appendSection(
           (debugLogEl?.textContent || "").split("\n"),
-          [`=== Resultado escaneo maps/ ===`, `Mapas encontrados: ${catalog.length}`, ...catalog.map((e) => `  · ${e.dir} (${e.label})`)],
+          [
+            "=== Resultado escaneo maps/ ===",
+            `Mapas listados: ${catalog.length}`,
+            ...scanResult.scanLog,
+            ...catalog.map((e) => `  · ${e.dir} (${e.label})`),
+          ],
         ),
       );
     } else {
