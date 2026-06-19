@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=28";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=28";
+import { APP_VERSION } from "./version.js?v=29";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=29";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=28";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=28";
-import { distPointPolyline } from "./geometry.js?v=28";
+} from "./omsi_browser.js?v=29";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=29";
+import { distPointPolyline } from "./geometry.js?v=29";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=28";
+} from "./debug.js?v=29";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -86,6 +86,7 @@ function alertWithDebug(err, context) {
 }
 
 let data = null;
+let loadTiming = null;
 let view = { scale: 1, offsetX: 0, offsetY: 0 };
 let dragging = false;
 let lastPointer = { x: 0, y: 0 };
@@ -334,6 +335,9 @@ function updateStats() {
   if (s.sliMissing > 0 || s.scoMissing > 0) {
     text += ` · faltan ${s.sliMissing ?? 0} .sli / ${s.scoMissing ?? 0} .sco`;
   }
+  if (loadTiming) {
+    text += ` · ${formatLoadTiming(loadTiming)}`;
+  }
   statsEl.textContent = text;
 }
 
@@ -435,14 +439,36 @@ async function loadMapFile(file) {
   return res.json();
 }
 
-async function applyData(json) {
+function formatMs(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function formatLoadTiming(t) {
+  if (!t) return "";
+  return `${formatMs(t.totalMs)} total (paths ${formatMs(t.processMs)} · dibujo ${formatMs(t.drawMs)})`;
+}
+
+async function applyData(json, timing = null) {
   data = json;
   selectedRailId = null;
   fitBounds(data.bounds);
-  updateStats();
+  const drawStart = performance.now();
   populateRoutes();
   updateInfo(null);
   draw();
+  const drawMs = performance.now() - drawStart;
+  if (timing) {
+    loadTiming = {
+      processMs: timing.processMs ?? 0,
+      drawMs,
+      totalMs: performance.now() - timing.startedAt,
+    };
+  } else {
+    loadTiming = null;
+  }
+  updateStats();
 }
 
 function setProgress(msg) {
@@ -590,11 +616,15 @@ async function loadSelectedOmsiMap() {
   }
   try {
     mapSelect.value = "";
+    const startedAt = performance.now();
     setProgress(`Cargando ${mapDir.split("/").pop()}…`);
+    const processStart = performance.now();
     const json = await loadMapLazy(omsiRoot, mapDir, setProgress, {
       globalCfgFile: selectedGlobalCfg,
     });
-    await applyData(json);
+    const processMs = performance.now() - processStart;
+    await applyData(json, { startedAt, processMs });
+    setProgress(`Listo — ${formatLoadTiming(loadTiming)}`);
   } catch (err) {
     alertWithDebug(err, "Error al cargar mapa");
     setProgress("");
@@ -664,8 +694,11 @@ mapSelect.addEventListener("change", async () => {
   if (!file) return;
   try {
     setProgress("Cargando demo…");
-    await applyData(await loadMapFile(file));
-    setProgress("Mapa precargado (demo).");
+    const startedAt = performance.now();
+    const json = await loadMapFile(file);
+    const processMs = performance.now() - startedAt;
+    await applyData(json, { startedAt, processMs });
+    setProgress(`Mapa precargado — ${formatLoadTiming(loadTiming)}`);
   } catch (err) {
     alert(err.message);
   }
@@ -675,10 +708,13 @@ fileInput.addEventListener("change", async (ev) => {
   const file = ev.target.files?.[0];
   if (!file) return;
   try {
+    const startedAt = performance.now();
     const text = await file.text();
-    await applyData(JSON.parse(text));
+    const json = JSON.parse(text);
+    const processMs = performance.now() - startedAt;
+    await applyData(json, { startedAt, processMs });
     mapSelect.value = "";
-    setProgress("JSON cargado.");
+    setProgress(`JSON cargado — ${formatLoadTiming(loadTiming)}`);
   } catch {
     alert("JSON inválido");
   }

@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=28";
-import { readOmsiText } from "./omsi_text.js?v=28";
+} from "./omsi_browser.js?v=29";
+import { readOmsiText } from "./omsi_text.js?v=29";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=28";
+} from "./geometry.js?v=29";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
