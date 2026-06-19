@@ -138,6 +138,34 @@ select:disabled {
   margin-top: 8px;
 }
 
+.debug-panel {
+  margin-top: 12px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.debug-panel summary {
+  cursor: pointer;
+  margin-bottom: 6px;
+  color: var(--accent);
+}
+
+.debug-log {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 280px;
+  overflow: auto;
+  background: #0a0e14;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: #c9d1d9;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .btn-secondary:hover {
   border-color: var(--accent);
 }

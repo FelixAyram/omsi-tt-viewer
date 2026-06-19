@@ -124,8 +124,16 @@ export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
     throw new Error("No se encontró la carpeta maps/ en la instalación OMSI 2.");
   }
   const entries = [];
+  const scanLog = [];
   for await (const [folderName, child] of mapsDir.entries()) {
-    if (child.kind !== "directory" || folderName.startsWith("_")) continue;
+    if (child.kind !== "directory") {
+      scanLog.push(`${folderName} [archivo, ignorado]`);
+      continue;
+    }
+    if (folderName.startsWith("_")) {
+      scanLog.push(`${folderName}/ [omitida, empieza por _]`);
+      continue;
+    }
     try {
       const gf = await getFileHandleInsensitive(child, "global.cfg");
       const file = await gf.getFile();
@@ -135,12 +143,15 @@ export async function scanMapsCatalogFromHandle(rootHandle, onProgress = null) {
         label = `${folderName} — ${cfgName}`;
       }
       entries.push({ dir: `maps/${folderName}`, folder: folderName, label });
-    } catch {
-      // no es mapa jugable
+      scanLog.push(`${folderName}/ → global.cfg OK`);
+    } catch (err) {
+      scanLog.push(`${folderName}/ → sin global.cfg (${err.message})`);
     }
   }
   if (!entries.length) {
-    throw new Error("No se encontraron mapas en maps/ (global.cfg por carpeta).");
+    const err = new Error("No se encontraron mapas en maps/ (global.cfg por carpeta).");
+    err.scanLog = scanLog;
+    throw err;
   }
   return entries.sort((a, b) => a.folder.localeCompare(b.folder, undefined, { sensitivity: "base" }));
 }

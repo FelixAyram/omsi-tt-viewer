@@ -1,12 +1,22 @@
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=6";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=7";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=6";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=6";
-import { distPointPolyline } from "./geometry.js?v=6";
+} from "./omsi_browser.js?v=7";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=7";
+import { distPointPolyline } from "./geometry.js?v=7";
+import {
+  initDebugPanel,
+  debugClear,
+  debugPrint,
+  debugError,
+  describeWebkitPick,
+  describeFsaRoot,
+  describeFsaMapHandle,
+  appendSection,
+} from "./debug.js?v=7";
 
 const canvas = document.getElementById("mapCanvas");
 const ctx = canvas.getContext("2d");
@@ -26,6 +36,45 @@ const progressEl = document.getElementById("progress");
 const infoEl = document.getElementById("infoPanel");
 const legendEl = document.getElementById("legend");
 const resetViewBtn = document.getElementById("resetView");
+const debugLogEl = document.getElementById("debugLog");
+
+initDebugPanel(debugLogEl);
+debugClear();
+
+async function logPickDebug(label, result, { append = false } = {}) {
+  if (!result) return;
+  let section = [`=== ${label} ===`, `Timestamp: ${new Date().toISOString()}`, ""];
+  try {
+    if (result.mode === "fsa" && result.rootHandle) {
+      section = appendSection(section, await describeFsaRoot(result.rootHandle));
+    } else if (result.mode === "fsa-map" && result.mapHandle) {
+      section = appendSection(section, await describeFsaMapHandle(result.mapHandle));
+    } else if (result.fileMap) {
+      section = appendSection(section, describeWebkitPick(result));
+    } else {
+      section.push(`Modo: ${result.mode ?? "?"}`);
+      section.push(JSON.stringify(result, null, 2));
+    }
+    const lines = append && debugLogEl?.textContent
+      ? appendSection(debugLogEl.textContent.split("\n"), section)
+      : section;
+    debugPrint(lines);
+  } catch (diagErr) {
+    debugError(diagErr, `Fallo al generar diagnóstico (${label})`);
+  }
+}
+
+function alertWithDebug(err, context) {
+  const extra = [];
+  if (err?.scanLog?.length) {
+    extra.push("", "Escaneo maps/:", ...err.scanLog.map((l) => `  · ${l}`));
+  }
+  debugError(err, context);
+  if (extra.length && debugLogEl) {
+    debugPrint(appendSection(debugLogEl.textContent.split("\n"), extra));
+  }
+  alert(`${context ? context + ":\n\n" : ""}${err?.message || String(err)}\n\n(Detalle completo en «Diagnóstico» abajo)`);
+}
 
 let data = null;
 let view = { scale: 1, offsetX: 0, offsetY: 0 };
@@ -349,12 +398,14 @@ async function onMapFolderPicked(mapPick) {
   pickOmsiBtn.disabled = true;
   pickMapFolderBtn.disabled = true;
   try {
+    await logPickDebug("Paso 1 — carpeta de mapa", mapPick);
     setProgress("Ahora elige la carpeta OMSI 2 (omsi.exe) para Splines y Sceneryobjects…");
     const assetPick = await pickOmsiAssetsRoot(setProgress);
     if (!assetPick) {
       setProgress("");
       return;
     }
+    await logPickDebug("Paso 2 — OMSI 2 (assets)", assetPick, { append: true });
 
     omsiRoot = combineMapAndAssetRoots(mapPick, assetPick);
     omsiRootLabel = omsiRoot.label;
@@ -370,7 +421,7 @@ async function onMapFolderPicked(mapPick) {
     omsiRoot = null;
     omsiPathLabel.textContent = "Sin carpeta seleccionada";
     omsiPathLabel.classList.add("muted");
-    alert(err.message || String(err));
+    alertWithDebug(err, "Error al cargar mapa directo");
     setProgress("");
   } finally {
     pickOmsiBtn.disabled = false;
@@ -384,6 +435,7 @@ async function onOmsiFolderPicked(result) {
   pickMapFolderBtn.disabled = true;
   setProgress("Conectando con OMSI 2…");
   try {
+    await logPickDebug("Carpeta OMSI 2 elegida", result);
     omsiRoot = result;
     omsiRootLabel = result.label;
     omsiPathLabel.textContent = omsiRootLabel;
@@ -392,9 +444,21 @@ async function onOmsiFolderPicked(result) {
     let catalog;
     if (result.mode === "fsa") {
       catalog = await scanMapsCatalogFromHandle(result.rootHandle, setProgress);
+      debugPrint(
+        appendSection(
+          (debugLogEl?.textContent || "").split("\n"),
+          [`=== Resultado escaneo maps/ ===`, `Mapas encontrados: ${catalog.length}`, ...catalog.map((e) => `  · ${e.dir} (${e.label})`)],
+        ),
+      );
     } else {
       validateOmsiInstall(result.fileMap);
       catalog = await listMapCatalog(result.fileMap);
+      debugPrint(
+        appendSection(
+          (debugLogEl?.textContent || "").split("\n"),
+          [`=== Resultado listMapCatalog ===`, `Mapas encontrados: ${catalog.length}`, ...catalog.map((e) => `  · ${e.dir} (${e.label})`)],
+        ),
+      );
     }
 
     await populateOmsiMapSelect(catalog);
@@ -405,7 +469,7 @@ async function onOmsiFolderPicked(result) {
     omsiMapSelect.innerHTML = '<option value="">— Elige primero la carpeta OMSI 2 —</option>';
     omsiMapSelect.disabled = true;
     loadOmsiMapBtn.disabled = true;
-    alert(err.message || String(err));
+    alertWithDebug(err, "Error al listar mapas");
     setProgress("");
   } finally {
     pickOmsiBtn.disabled = false;
@@ -422,7 +486,7 @@ async function loadSelectedOmsiMap() {
     const json = await loadMapLazy(omsiRoot, mapDir, setProgress);
     await applyData(json);
   } catch (err) {
-    alert(err.message || String(err));
+    alertWithDebug(err, "Error al cargar mapa");
     setProgress("");
   }
 }
@@ -431,7 +495,7 @@ pickOmsiBtn.addEventListener("click", async () => {
   try {
     await onOmsiFolderPicked(await pickOmsiRoot(setProgress));
   } catch (err) {
-    alert(err.message || String(err));
+    alertWithDebug(err, "Error al elegir OMSI 2");
   }
 });
 
@@ -439,7 +503,7 @@ pickMapFolderBtn.addEventListener("click", async () => {
   try {
     await onMapFolderPicked(await pickMapFolder(setProgress));
   } catch (err) {
-    alert(err.message || String(err));
+    alertWithDebug(err, "Error al elegir carpeta de mapa");
   }
 });
 
