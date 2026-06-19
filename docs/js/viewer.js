@@ -1,14 +1,14 @@
-import { APP_VERSION } from "./version.js?v=21";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=21";
+import { APP_VERSION } from "./version.js?v=22";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=22";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=21";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=21";
-import { distPointPolyline } from "./geometry.js?v=21";
+} from "./omsi_browser.js?v=22";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=22";
+import { distPointPolyline } from "./geometry.js?v=22";
 import {
   initDebugPanel,
   debugClear,
@@ -18,7 +18,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=21";
+} from "./debug.js?v=22";
 
 const appVersionEl = document.getElementById("appVersion");
 if (appVersionEl) {
@@ -166,16 +166,23 @@ function resizeCanvas() {
   draw();
 }
 
+/** Espejo en X al dibujar (vista cenital = editor OMSI; curvas a la derecha). */
+const VIEW_MIRROR_X = true;
+
 function worldToScreen(x, z) {
+  const dx = (x - view.offsetX) * view.scale;
   return {
-    x: (x - view.offsetX) * view.scale + canvas.clientWidth / 2,
+    x: VIEW_MIRROR_X ? canvas.clientWidth / 2 - dx : canvas.clientWidth / 2 + dx,
     y: (z - view.offsetY) * view.scale + canvas.clientHeight / 2,
   };
 }
 
 function screenToWorld(sx, sy) {
+  const dx = VIEW_MIRROR_X
+    ? (canvas.clientWidth / 2 - sx) / view.scale
+    : (sx - canvas.clientWidth / 2) / view.scale;
   return {
-    x: (sx - canvas.clientWidth / 2) / view.scale + view.offsetX,
+    x: dx + view.offsetX,
     z: (sy - canvas.clientHeight / 2) / view.scale + view.offsetY,
   };
 }
