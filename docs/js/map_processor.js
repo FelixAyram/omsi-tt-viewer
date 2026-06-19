@@ -6,8 +6,8 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=16";
-import { readOmsiText } from "./omsi_text.js?v=16";
+} from "./omsi_browser.js?v=17";
+import { readOmsiText } from "./omsi_text.js?v=17";
 import {
   sampleSplineRail,
   sampleScoRail,
@@ -15,7 +15,7 @@ import {
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=16";
+} from "./geometry.js?v=17";
 
 const TILE_SIZE = 300;
 const VEHICLE_TYP = 0;
@@ -149,6 +149,7 @@ function parseSplineBlock(lines, i) {
   let numStart = i + 4;
   if (previd !== "-1") numStart = i + 5;
   const nums = [];
+  let isMirrored = false;
   let j = numStart;
   while (j < lines.length && nums.length < 14) {
     const t = lines[j]?.trim();
@@ -157,7 +158,12 @@ function parseSplineBlock(lines, i) {
       continue;
     }
     if (t.startsWith("[")) break;
-    if (/^-?\d+(\.\d+)?$/.test(t.replace(",", "."))) {
+    if (/^mirror$/i.test(t)) {
+      isMirrored = true;
+      j += 1;
+      continue;
+    }
+    if (/^-?\d+([.,]\d+)?$/.test(t.replace(",", "."))) {
       nums.push(parseFloat(t.replace(",", ".")));
       j += 1;
     } else break;
@@ -173,8 +179,18 @@ function parseSplineBlock(lines, i) {
     rotation: nums[3],
     largo: nums[4],
     radius: nums[5] ?? 0,
+    isMirrored,
     endIdx: j,
   };
+}
+
+/** OmsiPathRules.MirrorAdjustedTravelDirection — invierte sentido en splines mirror. */
+function mirrorAdjustedDirection(direction, isMirrored) {
+  if (!isMirrored) return direction ?? PATH_DIR_FORWARD;
+  const dir = direction ?? PATH_DIR_FORWARD;
+  if (dir === PATH_DIR_FORWARD) return PATH_DIR_REVERSE;
+  if (dir === PATH_DIR_REVERSE) return PATH_DIR_FORWARD;
+  return PATH_DIR_BOTH;
 }
 
 function parseSliPaths(text) {
@@ -512,34 +528,125 @@ function enumerateTrafficLegs(rail) {
   return legs;
 }
 
-function findFreeStarts(rails) {
-  const free = new Set();
+/** Extremo del eje spline (sin offset lateral) más cercano al punto. */
+function nearestSplineAxisExtremity(rail, point, axisEnds) {
+  if (!point || !axisEnds) return null;
+  const dStart = Math.hypot(point[0] - axisEnds.start[0], point[2] - axisEnds.start[2]);
+  const dEnd = Math.hypot(point[0] - axisEnds.end[0], point[2] - axisEnds.end[2]);
+  return dStart <= dEnd ? "start" : "end";
+}
+
+function buildSplineAxisEnds(splines) {
+  const out = new Map();
+  for (const sp of splines.values()) {
+    if (sp.isInvis) continue;
+    const pts = sampleSplineRail(sp, sp.origin, { lateral: 0, height: 0 });
+    if (pts.length >= 2) out.set(sp.id, { start: pts[0], end: pts.at(-1) });
+  }
+  return out;
+}
+
+function endpointsNear(a, b, tol = CONNECT_TOL) {
+  return Math.hypot(a[0] - b[0], a[2] - b[2]) <= tol;
+}
+
+/**
+ * Mismo spline: el final de circulación de un carril reverso cierra el inicio
+ * de un carril forward en el mismo extremo del eje (cambio de carril en cruce).
+ */
+function sameSplineIncomingEnd(other, rail, myStart, splineAxis) {
+  if (rail.kind !== "spline" || other.kind !== "spline") return false;
+  if (rail.elementId !== other.elementId || other.id === rail.id) return false;
+  const axis = splineAxis.get(rail.elementId);
+  if (!axis) return false;
+  const otherEnd = getTrafficEndpoints(other).end;
+  if (!otherEnd) return false;
+  const side = nearestSplineAxisExtremity(rail, myStart, axis);
+  if (!side || side !== nearestSplineAxisExtremity(other, otherEnd, axis)) return false;
+  return other.direction === PATH_DIR_REVERSE && rail.direction === PATH_DIR_FORWARD;
+}
+
+/**
+ * Inicios libres (StartIsOpen) como Unity OmsiTrafficRouteDatabase:
+ * - Conectividad solo entre carriles vehículo (typ 0)
+ * - Marca libre solo splines vehículo (no segmentos SCO sueltos ni peatones)
+ * - Un path = un sentido de circulación (getTrafficEndpoints), no OR en doble sentido
+ */
+function findFreeStarts(rails, splineAxis) {
+  const vehicleRails = rails.filter((rail) => rail.typ === VEHICLE_TYP);
   const ends = [];
-  for (const rail of rails) {
-    for (const leg of enumerateTrafficLegs(rail)) {
-      ends.push({ railId: rail.id, end: leg.end });
-    }
+  for (const rail of vehicleRails) {
+    const { end } = getTrafficEndpoints(rail);
+    if (end) ends.push({ rail, end });
   }
 
-  for (const rail of rails) {
-    for (const leg of enumerateTrafficLegs(rail)) {
-      const sx = leg.start[0];
-      const sz = leg.start[2];
-      let incoming = false;
-      for (const o of ends) {
-        if (o.railId === rail.id) continue;
-        if (Math.hypot(o.end[0] - sx, o.end[2] - sz) <= CONNECT_TOL) {
-          incoming = true;
-          break;
-        }
+  const openStarts = new Set();
+  for (const rail of vehicleRails) {
+    const { start } = getTrafficEndpoints(rail);
+    if (!start) continue;
+    let incoming = false;
+    for (const o of ends) {
+      if (o.rail.id === rail.id) continue;
+      if (endpointsNear(o.end, start)) {
+        incoming = true;
+        break;
       }
-      if (!incoming) {
-        free.add(rail.id);
+      if (sameSplineIncomingEnd(o.rail, rail, start, splineAxis)) {
+        incoming = true;
         break;
       }
     }
+    if (!incoming) openStarts.add(rail.id);
+  }
+
+  const free = new Set();
+  for (const rail of vehicleRails) {
+    if (rail.kind === "spline" && openStarts.has(rail.id)) free.add(rail.id);
   }
   return free;
+}
+
+/** Final abierto (EndIsOpen): extremo de circulación sin otro path que empiece ahí. */
+function findOpenDeadEnds(rails, splineAxis) {
+  const vehicleRails = rails.filter((rail) => rail.typ === VEHICLE_TYP);
+  const starts = [];
+  for (const rail of vehicleRails) {
+    const { start } = getTrafficEndpoints(rail);
+    if (start) starts.push({ rail, start });
+  }
+
+  const open = new Set();
+  for (const rail of vehicleRails) {
+    if (rail.kind !== "spline") continue;
+    if (rail.direction !== PATH_DIR_FORWARD) continue;
+    const { end } = getTrafficEndpoints(rail);
+    if (!end) continue;
+    let blocked = false;
+    for (const o of starts) {
+      if (o.rail.id === rail.id) continue;
+      if (endpointsNear(o.start, end)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (blocked) continue;
+    for (const other of vehicleRails) {
+      if (other.id === rail.id || other.kind !== "spline" || rail.kind !== "spline") continue;
+      if (other.elementId !== rail.elementId) continue;
+      if (other.direction !== PATH_DIR_REVERSE) continue;
+      const otherStart = getTrafficEndpoints(other).start;
+      if (!otherStart) continue;
+      const axis = splineAxis.get(rail.elementId);
+      if (!axis) continue;
+      const endSide = nearestSplineAxisExtremity(rail, end, axis);
+      if (endSide && endSide === nearestSplineAxisExtremity(other, otherStart, axis)) {
+        blocked = true;
+        break;
+      }
+    }
+    if (!blocked) open.add(rail.id);
+  }
+  return open;
 }
 
 function busstopWorld(graph, stop, splines) {
@@ -725,8 +832,9 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
     const paths = sliCache.get(sliKey) || new Map([[0, { typ: 0, lateral: 0, height: 0, direction: 2 }]]);
     for (const [pidx, meta] of paths) {
+      const lateral = sp.isMirrored ? -meta.lateral : meta.lateral;
       const points = sampleSplineRail(sp, sp.origin, {
-        lateral: meta.lateral,
+        lateral,
         height: meta.height,
       });
       for (const p of points) expandBounds(bounds, p[0], p[2]);
@@ -737,7 +845,7 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
         pathIdx: String(pidx),
         typ: meta.typ,
         vehicle: meta.typ === VEHICLE_TYP,
-        direction: meta.direction,
+        direction: mirrorAdjustedDirection(meta.direction, sp.isMirrored),
         tile: sp.tile,
         points,
         start: points[0],
@@ -775,10 +883,18 @@ export async function processMapFolder(fileMap, mapDir, onProgress = () => {}) {
     }
   }
 
-  const freeIds = findFreeStarts(rails);
+  const splineAxis = buildSplineAxisEnds(splines);
+  const openStarts = findFreeStarts(rails, splineAxis);
+  const openDeadEnds = findOpenDeadEnds(rails, splineAxis);
+  const freeIds = new Set(openStarts);
+  for (const id of openDeadEnds) {
+    if (!openStarts.has(id)) freeIds.add(id);
+  }
   for (const r of rails) {
     r.freeStart = freeIds.has(r.id);
-    r.trafficStart = getTrafficEndpoints(r).start;
+    if (!r.freeStart) continue;
+    const ep = getTrafficEndpoints(r);
+    r.trafficStart = openStarts.has(r.id) ? ep.start : ep.end;
   }
 
   onProgress("Paradas…");
