@@ -170,6 +170,7 @@ export function drawRailsBatched(ctx, visibleItems, {
     const routeColors = routeRails.get(rail.id);
     const onRoute = routeColors && routeColors.length > 0;
 
+    if (rail.invis && !onRoute) continue;
     if (freeOnly && !rail.freeStart) continue;
     if (!showAll && !onRoute && !freeOnly) continue;
     if (!showAll && freeOnly && !rail.freeStart && !onRoute) continue;

@@ -237,6 +237,7 @@ export async function buildGpuSegmentLayers(rails, {
 
   for (let i = 0; i < total; i += 1) {
     const rail = rails[i];
+    if (rail.invis) continue;
     const pts = subsamplePoints(railLinePoints(rail, spawnSegmentFn));
     if (pts.length < 2) continue;
 

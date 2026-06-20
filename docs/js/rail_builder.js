@@ -1,5 +1,5 @@
 /** Generación de rieles compartida entre hilo principal y Web Workers. */
-import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=37";
+import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=38";
 
 export const VEHICLE_TYP = 0;
 export const PATH_DIR_FORWARD = 0;
@@ -117,7 +117,6 @@ export function buildSplineRails(items) {
   const rails = [];
   const bounds = emptyBounds();
   for (const { sp, pathsEntries } of items) {
-    if (sp.isInvis) continue;
     const paths = pathsFromEntries(pathsEntries);
     if (!paths.size) {
       for (const [pidx, meta] of new Map(DEFAULT_SLI_PATH)) {
@@ -141,6 +140,7 @@ export function buildSplineRails(items) {
         direction: mirrorAdjustedDirection(meta.direction, sp.isMirrored),
         isSplineH: sp.isSplineH ?? false,
         isMirrored: sp.isMirrored ?? false,
+        invis: sp.isInvis ?? false,
         tile: sp.tile,
         points,
         start: points[0],

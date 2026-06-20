@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=37";
-import { readOmsiText } from "./omsi_text.js?v=37";
+} from "./omsi_browser.js?v=38";
+import { readOmsiText } from "./omsi_text.js?v=38";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=37";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=37";
+} from "./geometry.js?v=38";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=38";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -26,8 +26,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=37";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=37";
+} from "./rail_builder.js?v=38";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=38";
 
 const TILE_SIZE = 300;
 const CONNECT_TOL = 0.1;
@@ -1112,7 +1112,6 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
 function collectRailWorkItems(splines, objects, sliCache, minTx, minTy) {
   const splineItems = [];
   for (const sp of splines.values()) {
-    if (sp.isInvis) continue;
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
     const paths = sliCache.get(sliKey) || DEFAULT_SLI_PATHS;
     splineItems.push({ sp, pathsEntries: [...paths.entries()] });
