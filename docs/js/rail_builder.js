@@ -1,5 +1,5 @@
 /** Generación de rieles compartida entre hilo principal y Web Workers. */
-import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=39";
+import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=40";
 
 export const VEHICLE_TYP = 0;
 export const PATH_DIR_FORWARD = 0;
@@ -147,7 +147,7 @@ export function buildSplineRails(items) {
         isSplineH: sp.isSplineH ?? false,
         isMirrored: sp.isMirrored ?? false,
         invis: sp.isInvis ?? false,
-        onlyEditor,
+        onlyEditor: onlyEditor || !!sp.isInvis,
         tile: sp.tile,
         points,
         start: points[0],

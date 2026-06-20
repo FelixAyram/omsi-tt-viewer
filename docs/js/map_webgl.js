@@ -237,12 +237,12 @@ export async function buildGpuSegmentLayers(rails, {
 
   for (let i = 0; i < total; i += 1) {
     const rail = rails[i];
-    if (rail.invis && !rail.onlyEditor) continue;
     const pts = subsamplePoints(railLinePoints(rail, spawnSegmentFn));
     if (pts.length < 2) continue;
 
     const typ = railTyp[rail.typ] || railTyp[0];
-    pushSegments(base, pts, hexToRgba(typ.stroke), 1.4, origin);
+    const width = rail.invis || rail.onlyEditor ? 2 : 1.6;
+    pushSegments(base, pts, hexToRgba(typ.stroke), width, origin);
 
     if (rail.freeStart) {
       const spawnPts = subsamplePoints(spawnSegmentFn(rail));
