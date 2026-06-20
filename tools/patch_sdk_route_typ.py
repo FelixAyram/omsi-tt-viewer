@@ -26,14 +26,22 @@ def backup(path: str) -> None:
     shutil.copy2(path, f"{path}.{ts}.bak")
 
 
-def patch_tile_size(path: str) -> None:
+def patch_tile_layout(path: str) -> None:
     text = open(path, encoding="utf-8").read()
-    if "_resolve_tile_size_m(" in text:
-        print(f"[skip] {path} ya tiene tile size por latitud")
+    if "_build_tile_layout(" in text:
+        print(f"[skip] {path} ya tiene tile layout Unity")
         return
 
+    # Quitar parche anterior basado en [mapcam] si existe
+    if "_resolve_tile_size_m(" in text:
+        start = text.find("\nTILE_SIZE_EQUATOR_M = 611.5\n")
+        end = text.find("\n\n@dataclass\nclass Point3:")
+        if start >= 0 and end > start:
+            text = text[:start] + text[end:]
+
     helpers = '''
-TILE_SIZE_EQUATOR_M = 611.5
+WORLD_EQUATOR_TILE_M = 611.5
+_TILE_LAYOUT: dict[tuple[int, int], tuple[float, float, float]] = {}
 
 
 def _read_global_cfg_text(cfg_path: str) -> str:
@@ -47,53 +55,119 @@ def _read_global_cfg_text(cfg_path: str) -> str:
         return handle.read()
 
 
-def _mapcam_latitude_from_cfg(cfg_text: str) -> float | None:
+def _is_global_coordinate_tile_name(stem: str) -> bool:
+    if not stem or stem.lower().startswith("tile_"):
+        return False
+    return len(stem) >= 5 and stem.isdigit()
+
+
+def _latitude_from_global_tile_name(stem: str) -> float | None:
+    if not _is_global_coordinate_tile_name(stem):
+        return None
+    code = int(stem)
+    if code >= 100_000:
+        return code / 10_000.0
+    if code >= 10_000:
+        return code / 1_000.0
+    return None
+
+
+def _tile_size_for_stem(stem: str) -> tuple[float, bool]:
+    if not _is_global_coordinate_tile_name(stem):
+        return TILE_SIZE, False
+    lat = _latitude_from_global_tile_name(stem) or 0.0
+    return WORLD_EQUATOR_TILE_M * math.cos(math.radians(lat)), True
+
+
+def _parse_map_entries_cfg(cfg_text: str) -> list[tuple[int, int, str]]:
     lines = cfg_text.replace("\\r\\n", "\\n").replace("\\r", "\\n").split("\\n")
-    in_section = False
-    values: list[str] = []
-    for line in lines:
-        text_line = line.strip()
-        if not text_line:
+    entries: list[tuple[int, int, str]] = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip().lower() != "[map]":
+            i += 1
             continue
-        if text_line.startswith("["):
-            if text_line.lower() == "[mapcam]":
-                in_section = True
+        vals: list[str] = []
+        j = i + 1
+        while j < len(lines):
+            text_line = lines[j].strip()
+            if not text_line:
+                j += 1
                 continue
-            if in_section:
+            if text_line.startswith("["):
                 break
-            continue
-        if in_section:
-            values.append(text_line)
-    if len(values) < 5:
-        return None
-    try:
-        lat = float(values[4].replace(",", "."))
-    except ValueError:
-        return None
-    if not math.isfinite(lat) or abs(lat) > 90:
-        return None
-    return lat
+            vals.append(text_line)
+            j += 1
+        if len(vals) >= 3:
+            try:
+                entries.append((int(vals[0]), int(vals[1]), vals[2].replace("\\\\", "/")))
+            except ValueError:
+                pass
+        i = j
+    return entries
 
 
-def _resolve_tile_size_m(copia_path: str) -> float:
+def _build_tile_layout(copia_path: str) -> dict[tuple[int, int], tuple[float, float, float]]:
     base = os.path.abspath(copia_path)
     if os.path.basename(base).lower() == "copia":
         base = os.path.dirname(base)
     cfg = os.path.join(base, "global.cfg")
-    if not os.path.isfile(cfg):
-        return TILE_SIZE
-    lat = _mapcam_latitude_from_cfg(_read_global_cfg_text(cfg))
-    if lat is None:
-        return TILE_SIZE
-    return TILE_SIZE_EQUATOR_M * math.cos(math.radians(lat))
+    entries = _parse_map_entries_cfg(_read_global_cfg_text(cfg)) if os.path.isfile(cfg) else []
+    if not entries:
+        return {}
+
+    metrics: list[tuple[int, int, str, float, bool]] = []
+    for x, y, rel in entries:
+        stem = os.path.splitext(os.path.basename(rel.replace("\\\\", "/")))[0]
+        size, is_global = _tile_size_for_stem(stem)
+        metrics.append((x, y, rel, size, is_global))
+
+    grid = {(x, y): (x, y, rel, size, is_global) for x, y, rel, size, is_global in metrics}
+    min_x = min(x for x, _, _, _, _ in metrics)
+    min_y = min(y for _, y, _, _, _ in metrics)
+    layout: dict[tuple[int, int], tuple[float, float, float]] = {}
+    for x, y, _rel, size, is_global in metrics:
+        origin_x = 0.0
+        origin_z = 0.0
+        for xi in range(min_x, x):
+            left = grid.get((xi, y))
+            origin_x += left[3] if left else TILE_SIZE
+        for yi in range(min_y, y):
+            below = grid.get((x, yi))
+            origin_z += below[3] if below else TILE_SIZE
+        if origin_x > 0.001 or origin_z > 0.001 or is_global:
+            layout[(x, y)] = (origin_x, origin_z, size)
+    return layout
 
 '''
     if "TILE_SIZE = 300.0\n" not in text:
         raise SystemExit("No se encontro TILE_SIZE = 300.0 en path_graph.py")
     text = text.replace("TILE_SIZE = 300.0\n", "TILE_SIZE = 300.0\n" + helpers, 1)
 
-    init_marker = "        self._min_tx = 0\n        self._min_ty = 0\n        self._load()"
-    init_patch = (
+    origin_fn = """def _tile_origin(tx: int, ty: int, min_tx: int, min_ty: int) -> Point3:
+    key = (tx, ty)
+    if key in _TILE_LAYOUT:
+        ox, oz, _ = _TILE_LAYOUT[key]
+        return Point3(ox, 0.0, oz)
+    return Point3(
+        (tx - min_tx) * TILE_SIZE,
+        0.0,
+        (ty - min_ty) * TILE_SIZE,
+    )
+"""
+    old_origin = """def _tile_origin(tx: int, ty: int, min_tx: int, min_ty: int) -> Point3:
+    return Point3(
+        (tx - min_tx) * TILE_SIZE,
+        0.0,
+        (ty - min_ty) * TILE_SIZE,
+    )
+"""
+    if old_origin not in text and "_TILE_LAYOUT[key]" not in text:
+        raise SystemExit("No se encontro _tile_origin en path_graph.py")
+    if old_origin in text:
+        text = text.replace(old_origin, origin_fn, 1)
+
+    init_old_mapcam = (
         "        self._min_tx = 0\n"
         "        self._min_ty = 0\n"
         "        global TILE_SIZE\n"
@@ -101,12 +175,29 @@ def _resolve_tile_size_m(copia_path: str) -> float:
         "        self._tile_size_m = TILE_SIZE\n"
         "        self._load()"
     )
-    if init_marker not in text:
+    init_plain = "        self._min_tx = 0\n        self._min_ty = 0\n        self._load()"
+    init_patch = (
+        "        self._min_tx = 0\n"
+        "        self._min_ty = 0\n"
+        "        global _TILE_LAYOUT\n"
+        "        _TILE_LAYOUT = _build_tile_layout(copia_path)\n"
+        "        self._tile_layout = _TILE_LAYOUT\n"
+        "        self._load()"
+    )
+    if init_old_mapcam in text:
+        text = text.replace(init_old_mapcam, init_patch, 1)
+    elif init_plain in text:
+        text = text.replace(init_plain, init_patch, 1)
+    else:
         raise SystemExit("No se encontro MapPathGraph.__init__ en path_graph.py")
-    text = text.replace(init_marker, init_patch, 1)
+
     backup(path)
     open(path, "w", encoding="utf-8", newline="\n").write(text)
-    print(f"[ok] path_graph.py tile size por latitud")
+    print(f"[ok] path_graph.py tile layout Unity (611.5×cos lat nombre)")
+
+
+def patch_tile_size(path: str) -> None:
+    patch_tile_layout(path)
 
 
 def patch_path_graph(path: str) -> None:

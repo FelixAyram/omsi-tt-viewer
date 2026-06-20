@@ -63,17 +63,20 @@ def _ensure_sdk():
     return sdk
 
 
-def _apply_map_tile_size(tiles_dir: str) -> tuple[float, float | None]:
+def _apply_map_tile_size(tiles_dir: str) -> dict:
     if _TOOLS_DIR not in sys.path:
         sys.path.insert(0, _TOOLS_DIR)
-    from omsi_tile_size import apply_tile_size_to_sdk
+    from omsi_tile_size import apply_tile_layout_to_sdk, build_tile_metrics_from_map_dir, tile_layout_summary
 
-    size, lat = apply_tile_size_to_sdk(tiles_dir)
-    if lat is not None:
-        print(f"[tile] lat={lat:.4f}° -> tile={size:.2f} m")
+    summary = apply_tile_layout_to_sdk(tiles_dir)
+    if summary.get("globalTileCount", 0) > 0:
+        print(
+            f"[tile] globales={summary['globalTileCount']} clásicos={summary['classicTileCount']} "
+            f"ej. lat={summary.get('mapLatitude')}° → {summary.get('tileSizeM')} m"
+        )
     else:
-        print(f"[tile] sin latitud en [mapcam] -> fallback {size:.2f} m")
-    return size, lat
+        print(f"[tile] mapa clásico tile_* → {summary.get('tileSizeM', 300)} m por tile")
+    return summary
 
 
 @dataclass

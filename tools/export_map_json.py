@@ -162,14 +162,19 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
     tiles_dir = map_tiles_dir(map_dir)
     if _TOOLS_DIR not in sys.path:
         sys.path.insert(0, _TOOLS_DIR)
-    from omsi_tile_size import apply_tile_size_to_sdk, tile_size_from_map_dir
+    from omsi_tile_size import apply_tile_layout_to_sdk, build_tile_metrics_from_map_dir, tile_layout_summary
 
-    tile_size_m, map_lat = tile_size_from_map_dir(tiles_dir)
-    apply_tile_size_to_sdk(tiles_dir)
-    if map_lat is not None:
-        print(f"[tile] lat={map_lat:.4f}° -> tile={tile_size_m:.2f} m")
+    metrics, _ = build_tile_metrics_from_map_dir(tiles_dir)
+    layout_summary = tile_layout_summary(metrics)
+    apply_tile_layout_to_sdk(tiles_dir)
+    if layout_summary.get("globalTileCount", 0) > 0:
+        print(
+            f"[tile] globales={layout_summary['globalTileCount']} "
+            f"clásicos={layout_summary['classicTileCount']} "
+            f"ej. {layout_summary.get('tileSizeM')} m"
+        )
     else:
-        print(f"[tile] sin latitud en [mapcam] -> fallback {tile_size_m:.2f} m")
+        print(f"[tile] mapa clásico tile_* → {layout_summary.get('tileSizeM', 300)} m")
 
     graph = MapPathGraph(tiles_dir, workers=0)
 
@@ -330,8 +335,10 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
             "freeStartCount": len(free_ids),
             "busstopCount": len(busstops),
             "routeCount": len(routes),
-            "tileSizeM": round(tile_size_m, 3),
-            "mapLatitude": round(map_lat, 3) if map_lat is not None else None,
+            "tileSizeM": layout_summary.get("tileSizeM"),
+            "mapLatitude": layout_summary.get("mapLatitude"),
+            "classicTileCount": layout_summary.get("classicTileCount", 0),
+            "globalTileCount": layout_summary.get("globalTileCount", 0),
         },
     }
 

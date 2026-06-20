@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=41";
-import { readOmsiText } from "./omsi_text.js?v=41";
+} from "./omsi_browser.js?v=42";
+import { readOmsiText } from "./omsi_text.js?v=42";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=41";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=41";
+} from "./geometry.js?v=42";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=42";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,12 +27,12 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=41";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=41";
+} from "./rail_builder.js?v=42";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=42";
 
-/** Ancho de tile en el ecuador (m); OMSI escala por cos(latitud) en [mapcam]. */
-const TILE_SIZE_EQUATOR_M = 611.5;
-const DEFAULT_TILE_SIZE_M = 300;
+/** Métricas OMSI (Unity omsi path / OmsiMapTileMetrics). */
+const STANDARD_TILE_M = 300;
+const WORLD_EQUATOR_TILE_M = 611.5;
 const CONNECT_TOL = 0.1;
 const IO_CONCURRENCY = ioConcurrency();
 const ENDPOINT_CELL_M = 2;
@@ -101,42 +101,135 @@ function parseTileCoords(name) {
   return m ? [parseInt(m[1], 10), parseInt(m[2], 10)] : null;
 }
 
-function tileSizeMeters(latitudeDeg) {
-  return TILE_SIZE_EQUATOR_M * Math.cos((latitudeDeg * Math.PI) / 180);
+function isGlobalCoordinateTileName(stem) {
+  if (!stem || stem.toLowerCase().startsWith("tile_")) return false;
+  if (stem.length < 5) return false;
+  return /^\d+$/.test(stem);
 }
 
-function parseMapcamLatitude(text) {
+function parseLatitudeFromGlobalTileName(stem) {
+  if (!isGlobalCoordinateTileName(stem)) return null;
+  const code = Number.parseInt(stem, 10);
+  if (!Number.isFinite(code)) return null;
+  if (code >= 100000) return code / 10000;
+  if (code >= 10000) return code / 1000;
+  return null;
+}
+
+function computeTileSizeMeters(latitudeDeg, isGlobal, manualOverride = 0) {
+  if (manualOverride > 0.01) return manualOverride;
+  if (!isGlobal) return STANDARD_TILE_M;
+  return WORLD_EQUATOR_TILE_M * Math.cos((latitudeDeg * Math.PI) / 180);
+}
+
+function parseMapEntriesFromGlobalCfg(text) {
   const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  let inSection = false;
-  const values = [];
-  for (const line of lines) {
-    const t = line.trim();
-    if (!t) continue;
-    if (t.startsWith("[")) {
-      if (t.toLowerCase() === "[mapcam]") {
-        inSection = true;
-        continue;
-      }
-      if (inSection) break;
+  const entries = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].trim().toLowerCase() !== "[map]") {
+      i += 1;
       continue;
     }
-    if (inSection) values.push(t);
+    const vals = [];
+    let j = i + 1;
+    while (j < lines.length) {
+      const t = lines[j].trim();
+      if (!t) {
+        j += 1;
+        continue;
+      }
+      if (t.startsWith("[")) break;
+      vals.push(t);
+      j += 1;
+    }
+    if (vals.length >= 3) {
+      const x = parseInt(vals[0], 10);
+      const y = parseInt(vals[1], 10);
+      const rel = vals[2].replace(/\\/g, "/");
+      if (Number.isFinite(x) && Number.isFinite(y) && rel) {
+        entries.push({ x, y, relativePath: rel, fileName: rel.split("/").pop() });
+      }
+    }
+    i = j;
   }
-  if (values.length < 5) return null;
-  const lat = safeFloat(values[4], NaN);
-  return Number.isFinite(lat) && Math.abs(lat) <= 90 ? lat : null;
+  return entries;
 }
 
-function resolveTileSizeM(globalText) {
-  const lat = parseMapcamLatitude(globalText);
-  if (lat == null) return { tileSizeM: DEFAULT_TILE_SIZE_M, mapLatitude: null };
-  return { tileSizeM: tileSizeMeters(lat), mapLatitude: lat };
-}
-
-function tileOrigin(tx, ty, minTx, minTy, tileSizeM) {
+function applyTileMetric(entry, manualOverride = 0) {
+  const stem = (entry.fileName || "").replace(/\.map$/i, "");
+  const isGlobal = isGlobalCoordinateTileName(stem);
+  const lat = parseLatitudeFromGlobalTileName(stem);
   return {
-    x: (tx - minTx) * tileSizeM,
-    z: (ty - minTy) * tileSizeM,
+    ...entry,
+    isGlobal,
+    latitudeDeg: lat ?? 0,
+    tileSizeM: computeTileSizeMeters(lat ?? 0, isGlobal, manualOverride),
+    layoutWorldX: 0,
+    layoutWorldZ: 0,
+  };
+}
+
+function applyWorldLayout(metrics, fallbackM = STANDARD_TILE_M) {
+  if (!metrics.length) return metrics;
+  const grid = new Map();
+  let minX = Infinity;
+  let minY = Infinity;
+  const fallback = fallbackM > 0.01 ? fallbackM : STANDARD_TILE_M;
+  for (const m of metrics) {
+    if (m.tileSizeM < 0.01) m.tileSizeM = fallback;
+    grid.set(`${m.x},${m.y}`, m);
+    minX = Math.min(minX, m.x);
+    minY = Math.min(minY, m.y);
+  }
+  for (const m of metrics) {
+    let originX = 0;
+    let originZ = 0;
+    for (let x = minX; x < m.x; x += 1) {
+      originX += grid.get(`${x},${m.y}`)?.tileSizeM ?? fallback;
+    }
+    for (let y = minY; y < m.y; y += 1) {
+      originZ += grid.get(`${m.x},${y}`)?.tileSizeM ?? fallback;
+    }
+    m.layoutWorldX = originX;
+    m.layoutWorldZ = originZ;
+  }
+  return metrics;
+}
+
+function getTileOriginFromMetric(metric, minTx, minTy, legacyUniform = STANDARD_TILE_M) {
+  if (metric.layoutWorldX > 0.001 || metric.layoutWorldZ > 0.001 || metric.isGlobal) {
+    return { x: metric.layoutWorldX, z: metric.layoutWorldZ };
+  }
+  const size = legacyUniform > 0.01 ? legacyUniform : STANDARD_TILE_M;
+  return { x: (metric.x - minTx) * size, z: (metric.y - minTy) * size };
+}
+
+function buildTileLayoutMap(globalText, tileFiles) {
+  const cfgEntries = parseMapEntriesFromGlobalCfg(globalText);
+  let metrics = [];
+  if (cfgEntries.length) {
+    metrics = cfgEntries.map((e) => applyTileMetric(e));
+  } else {
+    for (const tilePath of tileFiles) {
+      const fileName = tilePath.split("/").pop();
+      const coords = parseTileCoords(fileName);
+      if (!coords) continue;
+      metrics.push(applyTileMetric({ x: coords[0], y: coords[1], relativePath: fileName, fileName }));
+    }
+  }
+  applyWorldLayout(metrics);
+  const byName = new Map();
+  for (const m of metrics) byName.set(m.fileName.toLowerCase(), m);
+  const classicTileCount = metrics.filter((m) => !m.isGlobal).length;
+  const globalTileCount = metrics.filter((m) => m.isGlobal).length;
+  const sampleGlobal = metrics.find((m) => m.isGlobal);
+  return {
+    byName,
+    classicTileCount,
+    globalTileCount,
+    tileSizeM: sampleGlobal?.tileSizeM ?? STANDARD_TILE_M,
+    mapLatitude: sampleGlobal?.latitudeDeg ?? null,
   };
 }
 
@@ -938,9 +1031,16 @@ function resolveBusstopParentSpline(stop, splines, splineOrderByTile) {
 
 function busstopWorld(graph, stop, splines, splineOrderByTile) {
   const tile = parseTileCoords(stop.tile);
-  const tileOriginPt = tile
-    ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy, graph.tileSizeM)
-    : { x: 0, z: 0 };
+  const metric = graph.tileLayout?.byName?.get(stop.tile.toLowerCase());
+  const tileOriginPt = metric
+    ? getTileOriginFromMetric(metric, graph.minTx, graph.minTy)
+    : tile
+      ? getTileOriginFromMetric(
+          { x: tile[0], y: tile[1], layoutWorldX: 0, layoutWorldZ: 0, isGlobal: false },
+          graph.minTx,
+          graph.minTy,
+        )
+      : { x: 0, z: 0 };
   if (stop.standalone) {
     return {
       x: tileOriginPt.x + stop.x,
@@ -980,15 +1080,24 @@ function ingestTileMap(
   tileName,
   minTx,
   minTy,
-  tileSizeM,
+  tileLayout,
   splines,
   objects,
   busstops,
   splineOrderByTile,
 ) {
   const lines = text.split(/\r?\n/);
+  const metric = tileLayout?.byName?.get(tileName.toLowerCase());
   const coords = parseTileCoords(tileName);
-  const origin = tileOrigin(coords[0], coords[1], minTx, minTy, tileSizeM);
+  const origin = metric
+    ? getTileOriginFromMetric(metric, minTx, minTy)
+    : coords
+      ? getTileOriginFromMetric(
+          { x: coords[0], y: coords[1], layoutWorldX: 0, layoutWorldZ: 0, isGlobal: false },
+          minTx,
+          minTy,
+        )
+      : { x: 0, z: 0 };
   const splineOrder = [];
 
   for (let idx = 0; idx < lines.length; idx += 1) {
@@ -1167,7 +1276,7 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
   return { scoCache, scoFound, scoMissing, scoBusstopFlags };
 }
 
-function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileSizeM) {
+function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileLayout) {
   const splineItems = [];
   for (const sp of splines.values()) {
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
@@ -1182,14 +1291,23 @@ function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, 
   const objectItems = [];
   for (const obj of objects.values()) {
     if (!obj.paths?.size) continue;
+    const metric = tileLayout?.byName?.get(obj.tile.toLowerCase());
     const coords = parseTileCoords(obj.tile);
-    const origin = tileOrigin(coords[0], coords[1], minTx, minTy, tileSizeM);
+    const origin = metric
+      ? getTileOriginFromMetric(metric, minTx, minTy)
+      : coords
+        ? getTileOriginFromMetric(
+            { x: coords[0], y: coords[1], layoutWorldX: 0, layoutWorldZ: 0, isGlobal: false },
+            minTx,
+            minTy,
+          )
+        : { x: 0, z: 0 };
     objectItems.push({ obj, origin, pathsEntries: [...obj.paths.entries()] });
   }
   return { splineItems, objectItems };
 }
 
-async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileSizeM, pool) {
+async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileLayout, pool) {
   const { splineItems, objectItems } = collectRailWorkItems(
     splines,
     objects,
@@ -1197,7 +1315,7 @@ async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, m
     sliOnlyEditor,
     minTx,
     minTy,
-    tileSizeM,
+    tileLayout,
   );
   const tasks = [];
   const batchSize = railBatchSize(splineItems.length + objectItems.length, pool?.size);
@@ -1262,7 +1380,6 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   onProgress("Leyendo global.cfg…");
   const globalText = await readText(ctx.globalFile);
   const mapName = parseGlobalName(globalText) || mapDir.split("/").pop();
-  const { tileSizeM, mapLatitude } = resolveTileSizeM(globalText);
 
   const tileFiles = ctx.tilePaths ?? [...fileMap.keys()].filter((p) => {
     const n = normPath(p);
@@ -1273,6 +1390,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   const tileCoords = tileFiles.map((f) => parseTileCoords(f.split("/").pop())).filter(Boolean);
   const minTx = Math.min(...tileCoords.map((c) => c[0]));
   const minTy = Math.min(...tileCoords.map((c) => c[1]));
+  const tileLayout = buildTileLayoutMap(globalText, tileFiles);
 
   const splines = new Map();
   const objects = new Map();
@@ -1294,7 +1412,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       tilePath.split("/").pop(),
       minTx,
       minTy,
-      tileSizeM,
+      tileLayout,
       splines,
       objects,
       busstops,
@@ -1325,7 +1443,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   appendStandaloneObjectBusstops(objects, scoBusstopFlags, busstops);
   const busstopsDeduped = dedupeBusstopsByPosition(
     busstops,
-    { minTx, minTy, tileSizeM },
+    { minTx, minTy, tileLayout },
     splines,
     splineOrderByTile,
   );
@@ -1338,7 +1456,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
     sliOnlyEditor,
     minTx,
     minTy,
-    tileSizeM,
+    tileLayout,
     pool,
   );
 
@@ -1373,7 +1491,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   const busstopStandaloneCount = busstopsDeduped.filter((s) => s.standalone).length;
   const busstopOut = busstopsDeduped.map((s) => {
     const parentSpline = s.standalone ? "" : resolveBusstopParentSpline(s, splines, splineOrderByTile);
-    const w = busstopWorld({ minTx, minTy, tileSizeM }, s, splines, splineOrderByTile);
+    const w = busstopWorld({ minTx, minTy, tileLayout }, s, splines, splineOrderByTile);
     expandBounds(bounds, w.x, w.z);
     return {
       id: s.id,
@@ -1492,8 +1610,10 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       freeLegCount: startCandidates.filter((c) => c.isFreeStart).length,
       pathLegCount: startCandidates.length,
       connectToleranceM: CONNECT_TOL,
-      tileSizeM: Math.round(tileSizeM * 1000) / 1000,
-      mapLatitude: mapLatitude != null ? Math.round(mapLatitude * 1000) / 1000 : null,
+      tileSizeM: Math.round(tileLayout.tileSizeM * 1000) / 1000,
+      mapLatitude: tileLayout.mapLatitude != null ? Math.round(tileLayout.mapLatitude * 1000) / 1000 : null,
+      classicTileCount: tileLayout.classicTileCount,
+      globalTileCount: tileLayout.globalTileCount,
       busstopCount: busstopOut.length,
       busstopAttachmentCount,
       busstopStandaloneCount,

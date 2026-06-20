@@ -116,37 +116,34 @@ Esto es **solo visualización**; no modifica el `.ttr` en disco.
 
 ---
 
-## Tamaño de tile según latitud
+## Tamaño de tile según latitud (alineado con Unity `omsi path`)
 
-OMSI **no** usa siempre 300 m por tile. El motor comprime el recuadro geográfico hacia los polos (compensación Mercator) mientras los splines conservan su longitud métrica real:
+OMSI usa **dos modos** de tiles (ver `OmsiMapTileMetrics.cs` en `F:\unty\omsi path`):
 
-$$\text{tile\_size\_m} = 611{,}5 \times \cos(\text{latitud})$$
+| Tipo | Nombre del `.map` | Tamaño | Origen mundial |
+|------|-------------------|--------|----------------|
+| **Clásico** | `tile_0_0.map`, `tile_3640_5729.map` | **300 m** fijos | Rejilla uniforme `(tx−minTx)×300` |
+| **Global** | Solo dígitos ≥5 (`153835.map`) | **611,5 × cos(lat)** por tile | Suma acumulada del ancho de tiles vecinos |
 
-| Latitud | Tile aprox. |
-|---------|-------------|
+**Latitud en tiles globales:** se decodifica del **nombre del archivo**, no de `[mapcam]`:
+
+- `153835` → `153835 / 10000` = **15,3835°**
+- Códigos ≥100000 → `/10000`; ≥10000 → `/1000`
+
+Ejemplos de tamaño:
+
+| Latitud (nombre) | Tile aprox. |
+|----------------|-------------|
 | 0° (ecuador) | 611,5 m |
+| 15,38° | ~590 m |
 | 30° | ~530 m |
 | 52,5° (Berlín) | ~372 m |
-| 75° (ártico) | ~158 m |
 
-**Fuente de la latitud:** `global.cfg` → sección `[mapcam]` → 5.º valor (`tx`, `ty`, `x`, `y`, **lat**).
+Mapas como **Test_Lat30** o **Ahlheim 4** (`tile_*`) usan el modo **clásico 300 m**.  
+Mapas mundiales OMSI con tiles numéricos usan el modo **global** con layout Mercator acumulativo.
 
-Ejemplos medidos en mapas reales:
-
-| Mapa | `[mapcam]` lat | Tile calculado |
-|------|----------------|----------------|
-| Test_Lat30 | ~41,09° | ~461 m |
-| Ahlheim 4 | ~32,24° | ~517 m |
-
-El **visor web** (v41+), `tools/repair_ttr.py` y `tools/export_map_json.py` leen esa latitud al cargar `global.cfg`. Si falta `[mapcam]`, usan **300 m** como fallback (comportamiento legacy).
-
-Parche SDK (una vez, además del de typ de ruta):
-
-```powershell
-python tools/patch_sdk_route_typ.py
-```
-
-Módulo compartido: `tools/omsi_tile_size.py`.
+El visor (v42+), `tools/repair_ttr.py` y `tools/export_map_json.py` replican esta lógica.  
+Módulo: `tools/omsi_tile_size.py`. Parche SDK: `python tools/patch_sdk_route_typ.py`.
 
 ---
 
@@ -221,7 +218,7 @@ Variables de entorno: `OMSI_ROOT`, `OMSI_SDK`, `REPAIR_CPU_WORKERS`.
 1. **Copia de seguridad:** carpeta `TTData` completa (el script crea `TTData_backup_pre_repair` si no existe).
 2. **Auditoría:** `python tools/repair_ttr.py audit ...`
 3. **Reparar:** `python tools/repair_ttr.py repair ...`
-4. **Comprobar en visor:** https://felixayram.github.io/omsi-tt-viewer/ — versión ≥ 41, cargar mapa, revisar panel Rutas (entradas omitidas). La barra de stats muestra `tile N m (lat X°)`.
+4. **Comprobar en visor:** https://felixayram.github.io/omsi-tt-viewer/ — versión ≥ 42. Stats: `tile 300 m (clásico)` o `N tiles globales (~Xm, lat Y°)`.
 5. **Probar en OMSI:** cargar línea en el simulador; revisar `logfile.txt` si falla `LoadTrack`.
 
 ---
