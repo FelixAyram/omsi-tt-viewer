@@ -1,20 +1,20 @@
-import { APP_VERSION } from "./version.js?v=43";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=43";
+import { APP_VERSION } from "./version.js?v=44";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=44";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=43";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=43";
+} from "./omsi_browser.js?v=44";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=44";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=43";
+} from "./map_renderer.js?v=44";
 import {
   RailWebGLRenderer,
   buildGpuSegmentLayers,
@@ -22,7 +22,7 @@ import {
   buildGpuBusInstances,
   robustViewBounds,
   computeMapOrigin,
-} from "./map_webgl.js?v=43";
+} from "./map_webgl.js?v=44";
 import {
   initDebugPanel,
   debugClear,
@@ -32,7 +32,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=43";
+} from "./debug.js?v=44";
 
 const LARGE_MAP_RAILS = 15000;
 

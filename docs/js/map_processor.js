@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=43";
-import { readOmsiText } from "./omsi_text.js?v=43";
+} from "./omsi_browser.js?v=44";
+import { readOmsiAnsiText, readOmsiText } from "./omsi_text.js?v=44";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=43";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=43";
+} from "./geometry.js?v=44";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=44";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,8 +27,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=43";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=43";
+} from "./rail_builder.js?v=44";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=44";
 
 /** Métricas OMSI según motor (maps.c / FUN_007f283c). */
 const STANDARD_TILE_M = 300;
@@ -95,6 +95,10 @@ function safeFloat(text, fallback = 0) {
 
 function readText(file) {
   return readOmsiText(file);
+}
+
+function readAnsiText(file) {
+  return readOmsiAnsiText(file);
 }
 
 function parseTileCoords(name) {
@@ -581,7 +585,8 @@ function resolveTrackEntryRail(entry, ctx) {
   } else {
     const sp = splines.get(entry.elementId);
     const sliKey = sp?.path.replace(/\\/g, "/").toLowerCase();
-    const paths = sliCache.get(sliKey) || new Map();
+    const cached = sliCache.get(sliKey);
+    const paths = cached?.size ? cached : DEFAULT_SLI_PATHS;
     pathIdx = normalizeSplinePath(paths, pathIdx);
     typ = paths.get(parseInt(pathIdx, 10))?.typ ?? VEHICLE_TYP;
   }
@@ -1240,7 +1245,7 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
     async ([key, relPath]) => {
       const file = resolveFile(index, relPath, omsiPrefix);
       if (!file) return { key, missing: true };
-      return { key, text: await readText(file) };
+      return { key, text: await readAnsiText(file) };
     },
     IO_CONCURRENCY,
   );
@@ -1257,27 +1262,28 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
     }
   }
 
+  const storeSliParsed = (key, parsed) => {
+    const paths = parsed.paths?.size ? parsed.paths : new Map(DEFAULT_SLI_PATHS);
+    sliCache.set(key, paths);
+    sliOnlyEditor.set(key, !!parsed.onlyEditor);
+  };
+
   if (pool && toParse.length) {
     try {
       const parsed = await pool.runAll(
         toParse.map((r) => ({ type: "parseSli", key: r.key, text: r.text })),
       );
       for (const p of parsed) {
-        sliCache.set(p.key, new Map(p.pathsEntries));
-        sliOnlyEditor.set(p.key, !!p.onlyEditor);
+        storeSliParsed(p.key, { paths: new Map(p.pathsEntries), onlyEditor: p.onlyEditor });
       }
     } catch {
       for (const r of toParse) {
-        const parsed = parseSliFile(r.text);
-        sliCache.set(r.key, parsed.paths);
-        sliOnlyEditor.set(r.key, parsed.onlyEditor);
+        storeSliParsed(r.key, parseSliFile(r.text));
       }
     }
   } else {
     for (const r of toParse) {
-      const parsed = parseSliFile(r.text);
-      sliCache.set(r.key, parsed.paths);
-      sliOnlyEditor.set(r.key, parsed.onlyEditor);
+      storeSliParsed(r.key, parseSliFile(r.text));
     }
   }
 
@@ -1340,7 +1346,8 @@ function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, 
   const splineItems = [];
   for (const sp of splines.values()) {
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
-    const paths = sliCache.get(sliKey) || DEFAULT_SLI_PATHS;
+    const cached = sliCache.get(sliKey);
+    const paths = cached?.size ? cached : DEFAULT_SLI_PATHS;
     splineItems.push({
       sp,
       pathsEntries: [...paths.entries()],
