@@ -56,17 +56,38 @@ El visor web (`rail_builder.js` → `parseScoPaths`) numera objetos **0-based** 
 
 ## Tipos de path (`typ`)
 
-| `typ` | Uso OMSI | Visor / rutas bus |
-|-------|----------|-------------------|
-| `0` | Calle / vehículo | ✅ Se dibuja y cuenta |
-| `1` | Peatón | ❌ Omitido en rutas bus |
-| `2` | Tranvía / tren | ❌ Omitido en rutas bus |
+| `typ` | Uso OMSI | Visor web (rutas bus) |
+|-------|----------|------------------------|
+| `0` | Calle / autobús / coche | ✅ Se dibuja y cuenta |
+| `1` | Peatón | ❌ Omitido |
+| `2` | Tren / tranvía | ❌ Omitido en visor bus* |
+| `3` | Avión / aeronave | ❌ Omitido en visor bus* |
 
-Mensaje típico en el visor:
+\*El **reparador** sí distingue el typ de cada ruta (ver abajo).
 
-> no es carretera, typ=2 … las rutas .ttr de bus solo usan typ=0; OMSI lo ignora aquí
+### Modo de ruta (reparador)
 
-El reparador (`repair_entry_omsi`) intenta cambiar a un path `typ=0` del mismo spline/objeto cuando es posible.
+OMSI no guarda “bus vs tren” en un campo del `.ttr`. El reparador **infiere el typ de toda la ruta** desde la **primera entrada válida** con typ conducible (`0`, `2` o `3`):
+
+- Ruta que empieza en riel `typ=0` → todos los paths reparados serán `typ=0`
+- Ruta que empieza en `typ=2` → conectividad y normalización solo con paths de tren
+- Ruta que empieza en `typ=3` → solo paths de avión
+
+En **Ahlheim 4** (ejemplo): ~779 rutas bus, ~41 rutas tren.
+
+Aplicar parche SDK (una vez):
+
+```powershell
+python tools/patch_sdk_route_typ.py
+```
+
+Luego reparar solo geometría si ya corriste restore antes:
+
+```powershell
+python tools/repair_ttr.py repair "...\Ahlheim 4" --phases geometry
+```
+
+**Nota:** la fase `anchored` (anclas busstop) sigue pensada para líneas de bus con paradas `.ttp`; rutas de tren sin busstops no la usan.
 
 ---
 
@@ -153,7 +174,8 @@ Variables de entorno: `OMSI_ROOT`, `OMSI_SDK`, `REPAIR_CPU_WORKERS`.
 | `missing_element` | `element_id` no está en el mapa |
 | `missing_sli_path` | Path inexistente en `.sli` |
 | `missing_sco_path` | Path inexistente en `.sco` |
-| `non_vehicle_path` | `typ != 0` |
+| `wrong_path_typ` | Path con typ distinto al de la ruta (inferido del inicio) |
+| `non_vehicle_path` | *(legacy)* equivalente a `wrong_path_typ` con ruta bus |
 | `distance_overflow` | `reldist` mayor que largo del segmento |
 | `near_end` | Distancia ≥ ~85 % del path (OMSI rechaza) |
 | `disconnected` | Entrada no conecta geométricamente con la anterior |

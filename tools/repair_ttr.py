@@ -6,7 +6,7 @@ Usa el SDK movimiento_calle (OMSI 2/SDK). Flujo recomendado para mapas grandes:
 
   1. audit   — informe antes (issues OMSI + entradas que el visor omitiría)
   2. restore — restaurar formato OMSI 2.3 desde TTData_backup_pre_repair
-  3. geometry — repair_entry_omsi en cada entrada (conectividad, typ=0, distancias)
+  3. geometry — repair_entry_omsi por typ de ruta (0=bus, 2=tren, 3=avion; inferido del inicio)
   4. anchored — anclar en cajitas busstop (.ttp) y rellenar segmentos intermedios
 
 Ejemplos:
@@ -78,6 +78,15 @@ def _viewer_skip_label(skip: ViewerSkip) -> str:
             f"#{skip.index}: riel no encontrado ({skip.kind} {skip.element_id} - path {skip.path_idx}) "
             f"-- spline/objeto o path_idx ausente en el mapa"
         )
+    if skip.reason == "wrong-typ":
+        _typ_names = {0: "calle/bus", 1: "peaton", 2: "tren/tranvia", 3: "avion"}
+        route_typ = skip.detail.split(":")[0] if ":" in skip.detail else "?"
+        entry_typ = skip.detail.split(":")[1] if ":" in skip.detail else skip.detail
+        route_name = _typ_names.get(int(route_typ), route_typ) if route_typ.isdigit() else route_typ
+        return (
+            f"#{skip.index}: path typ={entry_typ} no coincide con ruta typ={route_typ} ({route_name}) "
+            f"({skip.kind} {skip.element_id} - path {skip.path_idx})"
+        )
     if skip.reason == "non-vehicle":
         typ_label = {1: "peatón", 2: "tranvía/tren"}.get(
             int(skip.detail) if skip.detail.isdigit() else -1, f"typ={skip.detail}"
@@ -90,8 +99,55 @@ def _viewer_skip_label(skip: ViewerSkip) -> str:
     return f"#{skip.index}: {skip.reason} ({skip.kind} {skip.element_id} path {skip.path_idx})"
 
 
+def audit_repair_skips(graph, entries, rel_file: str) -> list[ViewerSkip]:
+    """Entradas con typ distinto al de la ruta (inferido desde la primera entrada valida)."""
+    from movimiento_calle.ttr_omsi import EntryKind, classify_entry, infer_route_path_typ, path_typ_of_ref
+
+    route_typ = infer_route_path_typ(graph, entries)
+    skips: list[ViewerSkip] = []
+    for entry in entries:
+        idx = entry.index if entry.index is not None else 0
+        ref = classify_entry(graph, entry.element_id, entry.path_idx)
+        if ref.kind == EntryKind.INVALID:
+            skips.append(
+                ViewerSkip(rel_file, idx, entry.element_id, entry.path_idx, "invalid", "missing", "")
+            )
+            continue
+        kind = ref.kind.value
+        norm_path = (
+            graph.normalize_spline_path(entry.element_id, entry.path_idx)
+            if ref.kind == EntryKind.SPLINE
+            else graph.normalize_object_path(entry.element_id, entry.path_idx)
+        )
+        ref = classify_entry(graph, entry.element_id, norm_path)
+        path_ok = (
+            graph.spline_has_path(entry.element_id, norm_path)
+            if ref.kind == EntryKind.SPLINE
+            else graph.object_has_path(entry.element_id, norm_path)
+        )
+        if not path_ok:
+            skips.append(
+                ViewerSkip(rel_file, idx, entry.element_id, norm_path, kind, "missing", "")
+            )
+            continue
+        if not graph.is_path_typ(ref.rail, route_typ):
+            entry_typ = path_typ_of_ref(graph, ref)
+            skips.append(
+                ViewerSkip(
+                    rel_file,
+                    idx,
+                    entry.element_id,
+                    norm_path,
+                    kind,
+                    "wrong-typ",
+                    f"{route_typ}:{entry_typ}",
+                )
+            )
+    return skips
+
+
 def audit_viewer_skips(graph, entries, rel_file: str) -> list[ViewerSkip]:
-    """Misma lógica que resolveTrackEntryRail en docs/js/map_processor.js."""
+    """Omitidos en el visor web (solo rutas bus, typ=0)."""
     from movimiento_calle.ttr_omsi import EntryKind, classify_entry
 
     skips: list[ViewerSkip] = []
@@ -162,7 +218,7 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
     from movimiento_calle.config import REPAIR_CPU_WORKERS, cpu_worker_count
     from movimiento_calle.path_graph import MapPathGraph
     from movimiento_calle.ttdata_repair import map_tiles_dir
-    from movimiento_calle.ttr_omsi import validate_ttr_omsi
+    from movimiento_calle.ttr_omsi import infer_route_path_typ, TYP_LABELS, validate_ttr_omsi
     from movimiento_calle.ttr_v23 import count_omsi_load_errors
     from movimiento_calle.ttdata_updater import parse_ttr
 
@@ -185,13 +241,19 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
     omsi_parse_errors = 0
     skip_samples: list[str] = []
 
+    route_typ_counts: Counter[int] = Counter()
+    repair_reasons: Counter[str] = Counter()
+    files_with_repair = 0
+
     ttr_files = collect_ttr_files(tt_dir)
     for rel, path in ttr_files:
         with open(path, encoding="utf-8", errors="replace") as handle:
             _, entries = parse_ttr(handle.read())
         entries_total += len(entries)
         omsi_parse_errors += count_omsi_load_errors(entries)
-        issues = validate_ttr_omsi(graph, entries)
+        route_typ = infer_route_path_typ(graph, entries)
+        route_typ_counts[route_typ] += 1
+        issues = validate_ttr_omsi(graph, entries, route_typ=route_typ)
         if issues:
             files_with_omsi += 1
             for issue in issues:
@@ -205,6 +267,12 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
                 if len(skip_samples) < sample_skips:
                     skip_samples.append(_viewer_skip_label(sk))
 
+        rskips = audit_repair_skips(graph, entries, rel)
+        if rskips:
+            files_with_repair += 1
+            for sk in rskips:
+                repair_reasons[sk.reason] += 1
+
     report = {
         "map": os.path.basename(map_dir.rstrip("\\/")),
         "map_dir": map_dir,
@@ -215,7 +283,10 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
         "files_with_omsi_issues": files_with_omsi,
         "files_with_viewer_skips": files_with_viewer,
         "omsi_issues_by_code": dict(omsi_codes.most_common()),
+        "files_with_repair_skips": files_with_repair,
+        "route_typ_counts": {TYP_LABELS.get(k, str(k)): v for k, v in route_typ_counts.items()},
         "viewer_skips_by_reason": dict(viewer_reasons.most_common()),
+        "repair_skips_by_reason": dict(repair_reasons.most_common()),
         "viewer_skip_samples": skip_samples,
         "elapsed_s": round(time.time() - t0, 1),
     }
@@ -225,9 +296,12 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
     print(f"Entradas: {report['entries_total']}")
     print(f"Errores parse OMSI (sin path entero v23): {report['omsi_parse_errors']}")
     print(f"Archivos con issues OMSI: {files_with_omsi}")
-    print(f"Archivos con entradas omitidas en visor: {files_with_viewer}")
+    print(f"Rutas por typ de inicio: {report['route_typ_counts']}")
+    print(f"Archivos con entradas omitidas en visor (solo bus): {files_with_viewer}")
+    print(f"Archivos con typ distinto al de la ruta: {files_with_repair}")
     print(f"Issues OMSI por código: {report['omsi_issues_by_code']}")
-    print(f"Omitidos visor por motivo: {report['viewer_skips_by_reason']}")
+    print(f"Omitidos visor (bus): {report['viewer_skips_by_reason']}")
+    print(f"Omitidos reparador (por typ ruta): {report['repair_skips_by_reason']}")
     if skip_samples:
         print("\nMuestra (como en el visor):")
         for line in skip_samples[:15]:
@@ -238,7 +312,7 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
 
 def _geometry_pass_file(path: str, graph, backup_root: str | None, rel: str) -> dict:
     from movimiento_calle.ttdata_repair import rebuild_ttr_content, _file_header
-    from movimiento_calle.ttr_omsi import dedupe_redundant_entry0, repair_ttr_entries
+    from movimiento_calle.ttr_omsi import dedupe_redundant_entry0, infer_route_path_typ, repair_ttr_entries
     from movimiento_calle.ttr_v23 import audit_ttr_v23
     from movimiento_calle.ttdata_updater import parse_ttr
 
@@ -260,10 +334,11 @@ def _geometry_pass_file(path: str, graph, backup_root: str | None, rel: str) -> 
     if backup_content:
         _, backup_entries = parse_ttr(backup_content)
 
+    route_typ = infer_route_path_typ(graph, entries)
     repaired, changed = repair_ttr_entries(entries, graph)
     repaired, dropped = dedupe_redundant_entry0(repaired)
     if changed == 0 and dropped == 0:
-        return {"changed": 0, "dropped": dropped, "entries": len(entries)}
+        return {"changed": 0, "dropped": dropped, "entries": len(entries), "route_typ": route_typ}
 
     newline = "\r\n" if "\r\n" in content[:500] else "\n"
     new_content = rebuild_ttr_content(_file_header(lines), repaired, newline)
@@ -276,6 +351,7 @@ def _geometry_pass_file(path: str, graph, backup_root: str | None, rel: str) -> 
         "dropped": dropped,
         "entries": len(repaired),
         "omsi_errors": audit["omsi_load_errors"],
+        "route_typ": route_typ,
     }
 
 
