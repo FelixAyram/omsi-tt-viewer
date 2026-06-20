@@ -153,6 +153,10 @@ def collect_ttr_files(tt_dir: str) -> list[tuple[str, str]]:
     return sorted(files)
 
 
+def _log_progress(msg: str) -> None:
+    print(msg, flush=True)
+
+
 def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict:
     _ensure_sdk()
     from movimiento_calle.config import REPAIR_CPU_WORKERS, cpu_worker_count
@@ -170,7 +174,7 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
     print(f"[audit] tiles: {tiles_dir}")
     print(f"[audit] TTData: {tt_dir}")
     t0 = time.time()
-    graph = MapPathGraph(tiles_dir, progress_cb=lambda m: print(m, flush=True), workers=worker_count)
+    graph = MapPathGraph(tiles_dir, progress_cb=_log_progress, workers=worker_count)
     print(f"[audit] grafo en {time.time() - t0:.1f}s | {len(graph.splines)} splines, {len(graph.objects)} objetos")
 
     omsi_codes: Counter[str] = Counter()
@@ -295,7 +299,7 @@ def run_repair(
     if "restore" in phases and not dry_run:
         print("\n=== Fase: restore (formato OMSI 2.3 desde backup) ===")
         results["phases"]["restore"] = repair_ttdata(
-            map_dir, progress_cb=lambda m: print(m, flush=True), backup=backup, workers=worker_count
+            map_dir, progress_cb=_log_progress, backup=backup, workers=worker_count
         )
     elif "restore" in phases:
         print("\n=== Fase: restore (omitida en --dry-run) ===")
@@ -309,7 +313,7 @@ def run_repair(
             backup_dir = None
 
         t0 = time.time()
-        graph = MapPathGraph(tiles_dir, progress_cb=lambda m: print(m, flush=True), workers=worker_count)
+        graph = MapPathGraph(tiles_dir, progress_cb=_log_progress, workers=worker_count)
         stats = {"files": 0, "changed_files": 0, "changed_entries": 0, "dropped": 0}
         for rel, path in collect_ttr_files(tt_dir):
             stats["files"] += 1
@@ -334,7 +338,7 @@ def run_repair(
             dry_run=dry_run,
             workers=worker_count,
             backup_dir=backup_dir if os.path.isdir(backup_dir) else None,
-            progress_cb=lambda m: print(m, flush=True),
+            progress_cb=_log_progress,
         )
 
     return results
