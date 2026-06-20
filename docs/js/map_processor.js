@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=46";
-import { readOmsiAnsiText, readOmsiText } from "./omsi_text.js?v=46";
+} from "./omsi_browser.js?v=47";
+import { readOmsiAnsiText, readOmsiText } from "./omsi_text.js?v=47";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=46";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=46";
+} from "./geometry.js?v=47";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=47";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,8 +27,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=46";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=46";
+} from "./rail_builder.js?v=47";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=47";
 
 /** Métricas OMSI según motor (maps.c / FUN_007f283c). */
 const STANDARD_TILE_M = 300;
@@ -91,6 +91,17 @@ function safeFloat(text, fallback = 0) {
   if (!v || v.startsWith("[")) return fallback;
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/** Números OMSI en .map: decimal con coma/punto y notación científica (ej. -3.814E-6). */
+function isOmsiNumberToken(text) {
+  const v = String(text ?? "").trim().replace(",", ".");
+  if (!v || v.startsWith("[")) return false;
+  return /^-?(?:\d+\.?\d*|\d*\.\d+)(?:[eE][+-]?\d+)?$/.test(v);
+}
+
+function parseOmsiNumberToken(text) {
+  return parseFloat(String(text ?? "").trim().replace(",", "."));
 }
 
 function readText(file) {
@@ -379,8 +390,8 @@ function parseSplineBlock(lines, i, isSplineH = false) {
       j += 1;
       continue;
     }
-    if (/^-?\d+([.,]\d+)?$/.test(t.replace(",", "."))) {
-      nums.push(parseFloat(t.replace(",", ".")));
+    if (isOmsiNumberToken(t)) {
+      nums.push(parseOmsiNumberToken(t));
       j += 1;
     } else break;
   }
@@ -1150,6 +1161,7 @@ function ingestTileMap(
   objects,
   busstops,
   splineOrderByTile,
+  splineIngestFailures = null,
 ) {
   const lines = text.split(/\r?\n/);
   const metric = tileLayout?.byName?.get(tileName.toLowerCase());
@@ -1219,6 +1231,13 @@ function ingestTileMap(
           isSplineH: tag === "[spline_h]",
           isInvis: block.path.toLowerCase().includes("invis"),
         });
+      } else if (splineIngestFailures) {
+        splineIngestFailures.push({
+          tile: tileName,
+          id: lines[idx + 3]?.trim() ?? "?",
+          path: lines[idx + 2]?.trim() ?? "?",
+          isSplineH: tag === "[spline_h]",
+        });
       }
     }
   }
@@ -1234,7 +1253,14 @@ function sliFileBasename(relPath) {
 }
 
 /** Diagnóstico: paths por .sli/.sco y rieles generados por spline/object id. */
-export function buildRailLoadReport({ splines, objects, rails, sliByFile, scoByFile }) {
+export function buildRailLoadReport({
+  splines,
+  objects,
+  rails,
+  sliByFile,
+  scoByFile,
+  splineIngestFailures = [],
+}) {
   const railsBySplineId = new Map();
   const railsByObjectId = new Map();
   for (const r of rails) {
@@ -1297,6 +1323,7 @@ export function buildRailLoadReport({ splines, objects, rails, sliByFile, scoByF
     splineCount: splines.size,
     splinesWithRails,
     splineRailTotal,
+    splineIngestFailed: splineIngestFailures.length,
     uniqueSli,
     sliMissingCount,
     objectCount: objects.size,
@@ -1310,7 +1337,10 @@ export function buildRailLoadReport({ splines, objects, rails, sliByFile, scoByF
 
   const lines = [
     "=== Carga splines (.sli) ===",
-    `Splines en .map: ${summary.splineCount} · con rieles: ${summary.splinesWithRails}`,
+    `Splines en .map: ${summary.splineCount} · con rieles: ${summary.splinesWithRails}` +
+      (summary.splineIngestFailed
+        ? ` · ${summary.splineIngestFailed} no parseadas en .map`
+        : ""),
     `Archivos .sli únicos: ${summary.uniqueSli} (faltan ${summary.sliMissingCount})`,
     `Rieles spline: ${summary.splineRailTotal}`,
     "",
@@ -1321,9 +1351,17 @@ export function buildRailLoadReport({ splines, objects, rails, sliByFile, scoByF
     `Rieles object: ${summary.objectRailTotal}`,
     "",
     `Total rieles: ${summary.totalRails}`,
-    "",
-    "--- Splines (id · tile · .sli · paths → rieles) ---",
   ];
+  if (splineIngestFailures.length) {
+    lines.push(
+      "",
+      `--- Splines NO parseadas (${splineIngestFailures.length}) — coords E-notation u otro ---`,
+    );
+    for (const f of splineIngestFailures) {
+      lines.push(`spline ${f.id} · ${f.tile} · ${sliFileBasename(f.path)} [parse falló]`);
+    }
+  }
+  lines.push("", "--- Splines (id · tile · .sli · paths → rieles) ---");
   for (const row of splineRows) {
     const flags = [
       row.missing ? "MISSING" : null,
@@ -1353,7 +1391,7 @@ export function buildRailLoadReport({ splines, objects, rails, sliByFile, scoByF
     );
   }
 
-  return { summary, splineRows, objectRows, lines };
+  return { summary, splineRows, objectRows, lines, splineIngestFailures };
 }
 
 async function loadSliCache(splines, index, omsiPrefix, pool) {
@@ -1634,6 +1672,8 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   const busstops = [];
   const splineOrderByTile = new Map();
 
+  const splineIngestFailures = [];
+
   onProgress(`Parseando ${tileFiles.length} tiles…`);
   const tileTexts = await runInParallel(
     tileFiles,
@@ -1654,6 +1694,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       objects,
       busstops,
       splineOrderByTile,
+      splineIngestFailures,
     );
   }
 
@@ -1697,7 +1738,14 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
     pool,
   );
 
-  const loadReport = buildRailLoadReport({ splines, objects, rails, sliByFile, scoByFile });
+  const loadReport = buildRailLoadReport({
+    splines,
+    objects,
+    rails,
+    sliByFile,
+    scoByFile,
+    splineIngestFailures,
+  });
 
   const startCandidates = findFreeStartCandidates(rails);
   const omsiSpawn = findOmsiVehicleSpawnRails(rails, splines);
@@ -1866,6 +1914,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       scoFound,
       scoMissing,
       splineCount: splines.size,
+      splineIngestFailed: splineIngestFailures.length,
       objectCount: objects.size,
       parallelWorkers,
       parallelPoolSize: defaultPoolSize(),

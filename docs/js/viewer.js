@@ -1,20 +1,20 @@
-import { APP_VERSION } from "./version.js?v=46";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=46";
+import { APP_VERSION } from "./version.js?v=47";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=47";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=46";
-import { RAIL_TYP, SPLINE_RAIL, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=46";
+} from "./omsi_browser.js?v=47";
+import { RAIL_TYP, SPLINE_RAIL, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=47";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=46";
+} from "./map_renderer.js?v=47";
 import {
   RailWebGLRenderer,
   buildGpuSegmentLayers,
@@ -22,7 +22,7 @@ import {
   buildGpuBusInstances,
   robustViewBounds,
   computeMapOrigin,
-} from "./map_webgl.js?v=46";
+} from "./map_webgl.js?v=47";
 import {
   initDebugPanel,
   debugClear,
@@ -32,7 +32,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=46";
+} from "./debug.js?v=47";
 
 const LARGE_MAP_RAILS = 15000;
 
@@ -611,7 +611,12 @@ function logRailLoadReport(report) {
       : [...lines.slice(0, panelMax), `… (${lines.length - panelMax} líneas más en consola)`];
   debugPrint(panelLines);
 
-  console.group("[OMSI] Diagnóstico splines / .sco");
+  if (report.splineIngestFailures?.length) {
+    console.warn(
+      `[OMSI] ${report.splineIngestFailures.length} splines no parseadas en .map`,
+      report.splineIngestFailures,
+    );
+  }
   console.log("Resumen:", summary);
   console.groupCollapsed(`Splines (${splineRows.length}) — id · tile · .sli · paths → rieles`);
   console.table(
