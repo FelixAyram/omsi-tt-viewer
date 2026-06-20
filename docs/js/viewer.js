@@ -1,26 +1,28 @@
-import { APP_VERSION } from "./version.js?v=34";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=34";
+import { APP_VERSION } from "./version.js?v=35";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=35";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=34";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=34";
+} from "./omsi_browser.js?v=35";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=35";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=34";
+} from "./map_renderer.js?v=35";
 import {
   RailWebGLRenderer,
   buildGpuSegmentLayers,
   buildGpuOverlaySegments,
   buildGpuBusInstances,
-} from "./map_webgl.js?v=34";
+  robustViewBounds,
+  computeMapOrigin,
+} from "./map_webgl.js?v=35";
 import {
   initDebugPanel,
   debugClear,
@@ -30,7 +32,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=34";
+} from "./debug.js?v=35";
 
 const LARGE_MAP_RAILS = 15000;
 
@@ -111,6 +113,7 @@ let panSnapshot = null;
 let drawPending = false;
 let lastDrawnVisible = 0;
 let gpuSegmentTotal = 0;
+let mapOrigin = { x: 0, z: 0 };
 let railsById = null;
 let overlayDirty = true;
 let selectedRailId = null;
@@ -215,6 +218,7 @@ function rebuildGpuOverlayIfNeeded() {
     selectedRailId,
     selectedHex: SELECTED.stroke,
     spawnSegmentFn: railSpawnSegment,
+    origin: mapOrigin,
   });
   gpuRenderer.setOverlayLayer(overlay);
 }
@@ -284,12 +288,15 @@ function screenToWorld(sx, sy) {
 
 function fitBounds(bounds, padding = 40) {
   if (!bounds) return;
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  if (cw <= 0 || ch <= 0) return;
   const w = bounds.maxX - bounds.minX || 1;
   const h = bounds.maxZ - bounds.minZ || 1;
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cz = (bounds.minZ + bounds.maxZ) / 2;
-  const sx = (canvas.clientWidth - padding * 2) / w;
-  const sy = (canvas.clientHeight - padding * 2) / h;
+  const sx = (cw - padding * 2) / w;
+  const sy = (ch - padding * 2) / h;
   view.scale = Math.min(sx, sy);
   view.offsetX = cx;
   view.offsetY = cz;
@@ -587,27 +594,40 @@ async function applyData(json, timing = null) {
   railIndex = buildRailSpatialIndex(json.rails || []);
   railsById = new Map((json.rails || []).map((r) => [r.id, r]));
   overlayDirty = true;
-  fitBounds(data.bounds);
+
+  const viewBounds = robustViewBounds(json.bounds, json.rails);
+  data.viewBounds = viewBounds;
+  mapOrigin = computeMapOrigin(viewBounds);
+  if (useGpu) gpuRenderer.setOrigin(mapOrigin);
+
+  resizeCanvas();
+  fitBounds(viewBounds);
+
   const drawStart = performance.now();
   populateRoutes();
   updateInfo(null);
 
   if (useGpu && json.rails?.length) {
     setProgress("Subiendo geometría a GPU…");
-    const layers = await buildGpuSegmentLayers(json.rails, {
-      railTyp: RAIL_TYP,
-      freeStartHex: FREE_START.stroke,
-      spawnSegmentFn: railSpawnSegment,
-      onProgress: (i, t) => setProgress(`GPU ${Math.round((100 * i) / t)}% (${i}/${t} rieles)…`),
-    });
-    gpuSegmentTotal = Math.floor(layers.base.length / 9);
-    gpuRenderer.setBaseLayer(layers.base);
-    gpuRenderer.setFreeLayer(layers.free);
-    gpuRenderer.setOverlayLayer([]);
-    gpuRenderer.setBusLayer(
-      buildGpuBusInstances(json.busstops || [], BUSSTOP.fill, BUSSTOP.stroke),
-    );
-    resizeCanvas();
+    try {
+      const layers = await buildGpuSegmentLayers(json.rails, {
+        railTyp: RAIL_TYP,
+        freeStartHex: FREE_START.stroke,
+        spawnSegmentFn: railSpawnSegment,
+        origin: mapOrigin,
+        onProgress: (i, t) => setProgress(`GPU ${Math.round((100 * i) / t)}% (${i}/${t} rieles)…`),
+      });
+      gpuSegmentTotal = Math.floor(layers.base.length / 9);
+      gpuRenderer.setBaseLayer(layers.base);
+      gpuRenderer.setFreeLayer(layers.free);
+      gpuRenderer.setOverlayLayer([]);
+      gpuRenderer.setBusLayer(
+        buildGpuBusInstances(json.busstops || [], BUSSTOP.fill, BUSSTOP.stroke, mapOrigin),
+      );
+    } catch (gpuErr) {
+      debugError(gpuErr, "Fallo al subir geometría GPU");
+      gpuSegmentTotal = 0;
+    }
   }
 
   draw();
@@ -882,7 +902,7 @@ fileInput.addEventListener("change", async (ev) => {
 });
 
 resetViewBtn.addEventListener("click", () => {
-  if (data?.bounds) fitBounds(data.bounds);
+  if (data?.bounds) fitBounds(data.viewBounds ?? data.bounds);
   scheduleDraw();
 });
 

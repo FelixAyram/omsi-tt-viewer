@@ -156,13 +156,15 @@ function subsamplePoints(pts, maxPts = 24) {
   return out;
 }
 
-function pushSegments(target, pts, rgba, widthPx) {
+function pushSegments(target, pts, rgba, widthPx, origin) {
+  const ox = origin?.x ?? 0;
+  const oz = origin?.z ?? 0;
   for (let i = 1; i < pts.length; i += 1) {
     target.push(
-      pts[i - 1][0],
-      pts[i - 1][2],
-      pts[i][0],
-      pts[i][2],
+      pts[i - 1][0] - ox,
+      pts[i - 1][2] - oz,
+      pts[i][0] - ox,
+      pts[i][2] - oz,
       rgba[0],
       rgba[1],
       rgba[2],
@@ -172,12 +174,62 @@ function pushSegments(target, pts, rgba, widthPx) {
   }
 }
 
+/** Percentil en array ya ordenado. */
+function percentile(sorted, pct) {
+  if (!sorted.length) return 0;
+  const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * pct));
+  return sorted[idx];
+}
+
+/**
+ * Bounds sin outliers (mapas enormes con un riel lejano colapsan el zoom).
+ * Si el span es razonable devuelve bounds tal cual.
+ */
+export function robustViewBounds(bounds, rails) {
+  if (!bounds || !Number.isFinite(bounds.minX)) return bounds;
+  const spanX = bounds.maxX - bounds.minX;
+  const spanZ = bounds.maxZ - bounds.minZ;
+  const maxSpan = Math.max(spanX, spanZ);
+  if (maxSpan < 45000 || !rails?.length) return bounds;
+
+  const xs = [];
+  const zs = [];
+  const step = Math.max(1, Math.floor(rails.length / 12000));
+  for (let i = 0; i < rails.length; i += step) {
+    const rail = rails[i];
+    const p = rail.points?.[0] || rail.start;
+    if (p && Number.isFinite(p[0]) && Number.isFinite(p[2])) {
+      xs.push(p[0]);
+      zs.push(p[2]);
+    }
+  }
+  if (xs.length < 80) return bounds;
+
+  xs.sort((a, b) => a - b);
+  zs.sort((a, b) => a - b);
+  const minX = percentile(xs, 0.005);
+  const maxX = percentile(xs, 0.995);
+  const minZ = percentile(zs, 0.005);
+  const maxZ = percentile(zs, 0.995);
+  if (maxX - minX < 200 || maxZ - minZ < 200) return bounds;
+  return { minX, maxX, minZ, maxZ };
+}
+
+export function computeMapOrigin(bounds) {
+  if (!bounds) return { x: 0, z: 0 };
+  return {
+    x: (bounds.minX + bounds.maxX) / 2,
+    z: (bounds.minZ + bounds.maxZ) / 2,
+  };
+}
+
 export async function buildGpuSegmentLayers(rails, {
   railTyp,
   freeStartHex,
   spawnSegmentFn,
   onProgress,
   chunkSize = 2000,
+  origin,
 }) {
   const base = [];
   const free = [];
@@ -189,12 +241,12 @@ export async function buildGpuSegmentLayers(rails, {
     if (pts.length < 2) continue;
 
     const typ = railTyp[rail.typ] || railTyp[0];
-    pushSegments(base, pts, hexToRgba(typ.stroke), 1.4);
+    pushSegments(base, pts, hexToRgba(typ.stroke), 1.4, origin);
 
     if (rail.freeStart) {
       const spawnPts = subsamplePoints(spawnSegmentFn(rail));
       if (spawnPts.length >= 2) {
-        pushSegments(free, spawnPts, hexToRgba(freeStartHex), 2.8);
+        pushSegments(free, spawnPts, hexToRgba(freeStartHex), 2.8, origin);
       }
     }
 
@@ -212,6 +264,7 @@ export function buildGpuOverlaySegments(railsById, {
   selectedRailId,
   selectedHex,
   spawnSegmentFn,
+  origin,
 }) {
   const overlay = [];
   const done = new Set();
@@ -223,7 +276,7 @@ export function buildGpuOverlaySegments(railsById, {
     done.add(rid);
     const pts = subsamplePoints(railLinePoints(rail, spawnSegmentFn));
     if (pts.length < 2) continue;
-    pushSegments(overlay, pts, hexToRgba(colors[0]), 3.6);
+    pushSegments(overlay, pts, hexToRgba(colors[0]), 3.6, origin);
   }
 
   if (selectedRailId && !done.has(selectedRailId)) {
@@ -231,20 +284,22 @@ export function buildGpuOverlaySegments(railsById, {
     if (rail) {
       const pts = subsamplePoints(railLinePoints(rail, spawnSegmentFn));
       if (pts.length >= 2) {
-        pushSegments(overlay, pts, hexToRgba(selectedHex), 4.5);
+        pushSegments(overlay, pts, hexToRgba(selectedHex), 4.5, origin);
       }
     }
   }
   return overlay;
 }
 
-export function buildGpuBusInstances(busstops, fillHex, strokeHex) {
+export function buildGpuBusInstances(busstops, fillHex, strokeHex, origin) {
   const out = [];
   const fill = hexToRgba(fillHex);
   const stroke = hexToRgba(strokeHex);
+  const ox = origin?.x ?? 0;
+  const oz = origin?.z ?? 0;
   for (const stop of busstops) {
-    out.push(stop.x, stop.z, fill[0], fill[1], fill[2], fill[3], 7);
-    out.push(stop.x, stop.z, stroke[0], stroke[1], stroke[2], stroke[3], 8);
+    out.push(stop.x - ox, stop.z - oz, fill[0], fill[1], fill[2], fill[3], 7);
+    out.push(stop.x - ox, stop.z - oz, stroke[0], stroke[1], stroke[2], stroke[3], 8);
   }
   return out;
 }
@@ -267,8 +322,14 @@ class InstanceLayer {
     const gl = this.gl;
     this.floatsPerInstance = floatsPerInstance;
     this.count = floats.length / floatsPerInstance;
+    if (this.count <= 0) return;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(floats), gl.STATIC_DRAW);
+    const arr = floats instanceof Float32Array ? floats : new Float32Array(floats);
+    gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+    const err = gl.getError();
+    if (err !== gl.NO_ERROR) {
+      throw new Error(`WebGL buffer upload failed (0x${err.toString(16)})`);
+    }
   }
 
   draw(uniforms) {
@@ -330,6 +391,7 @@ export class RailWebGLRenderer {
     this.height = 0;
     this.baseSegments = 0;
     this.freeSegments = 0;
+    this.origin = { x: 0, z: 0 };
 
     try {
       const gl = canvas.getContext("webgl2", {
@@ -400,6 +462,10 @@ export class RailWebGLRenderer {
     this.busLayer.setInstances(floats, FLOATS_PER_BUS);
   }
 
+  setOrigin(origin) {
+    this.origin = origin || { x: 0, z: 0 };
+  }
+
   draw(view, { mirrorX, showAll, freeOnly, showBusstops }) {
     if (!this.ok) return 0;
     const gl = this.gl;
@@ -407,11 +473,13 @@ export class RailWebGLRenderer {
     gl.clearColor(0.071, 0.082, 0.11, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
+    const ox = this.origin?.x ?? 0;
+    const oz = this.origin?.z ?? 0;
     const pack = {
       width: this.width,
       height: this.height,
-      offsetX: view.offsetX,
-      offsetY: view.offsetY,
+      offsetX: view.offsetX - ox,
+      offsetY: view.offsetY - oz,
       scale: view.scale,
       mirrorX,
       resolution: this.uniforms.resolution,
