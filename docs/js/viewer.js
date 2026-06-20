@@ -1,20 +1,20 @@
-import { APP_VERSION } from "./version.js?v=35";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=35";
+import { APP_VERSION } from "./version.js?v=37";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=37";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=35";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=35";
+} from "./omsi_browser.js?v=37";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=37";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=35";
+} from "./map_renderer.js?v=37";
 import {
   RailWebGLRenderer,
   buildGpuSegmentLayers,
@@ -22,7 +22,7 @@ import {
   buildGpuBusInstances,
   robustViewBounds,
   computeMapOrigin,
-} from "./map_webgl.js?v=35";
+} from "./map_webgl.js?v=37";
 import {
   initDebugPanel,
   debugClear,
@@ -32,7 +32,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=35";
+} from "./debug.js?v=37";
 
 const LARGE_MAP_RAILS = 15000;
 
@@ -436,8 +436,11 @@ function updateStats() {
   const total = s.railCount ?? data.rails.length;
   let text =
     `${data.mapName} · ${total} rieles · ` +
-    `${s.freeStartCount ?? 0} libres · ${s.busstopCount ?? data.busstops.length} paradas · ` +
-    `${s.routeCount ?? data.routes.length} rutas`;
+    `${s.freeStartCount ?? 0} libres · ${s.busstopCount ?? data.busstops.length} paradas` +
+    (s.busstopStandaloneCount != null
+      ? ` (${s.busstopAttachmentCount ?? 0} att + ${s.busstopStandaloneCount} obj)`
+      : "") +
+    ` · ${s.routeCount ?? data.routes.length} rutas`;
   if (s.sliMissing > 0 || s.scoMissing > 0) {
     text += ` · faltan ${s.sliMissing ?? 0} .sli / ${s.scoMissing ?? 0} .sco`;
   }

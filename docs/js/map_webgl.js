@@ -298,8 +298,8 @@ export function buildGpuBusInstances(busstops, fillHex, strokeHex, origin) {
   const ox = origin?.x ?? 0;
   const oz = origin?.z ?? 0;
   for (const stop of busstops) {
-    out.push(stop.x - ox, stop.z - oz, fill[0], fill[1], fill[2], fill[3], 7);
-    out.push(stop.x - ox, stop.z - oz, stroke[0], stroke[1], stroke[2], stroke[3], 8);
+    out.push(stop.x - ox, stop.z - oz, fill[0], fill[1], fill[2], fill[3], 5);
+    out.push(stop.x - ox, stop.z - oz, stroke[0], stroke[1], stroke[2], stroke[3], 6.5);
   }
   return out;
 }

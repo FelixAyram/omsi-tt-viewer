@@ -26,7 +26,7 @@ export const FREE_START = {
 
 export const BUSSTOP = {
   fill: "#f97316",
-  stroke: "#fff",
+  stroke: "#1a1208",
 };
 
 export const SELECTED = {

@@ -1,5 +1,5 @@
 /** Generación de rieles compartida entre hilo principal y Web Workers. */
-import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=35";
+import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=37";
 
 export const VEHICLE_TYP = 0;
 export const PATH_DIR_FORWARD = 0;

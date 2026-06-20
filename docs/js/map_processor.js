@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=35";
-import { readOmsiText } from "./omsi_text.js?v=35";
+} from "./omsi_browser.js?v=37";
+import { readOmsiText } from "./omsi_text.js?v=37";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=35";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=35";
+} from "./geometry.js?v=37";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=37";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -26,8 +26,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=35";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=35";
+} from "./rail_builder.js?v=37";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=37";
 
 const TILE_SIZE = 300;
 const CONNECT_TOL = 0.1;
@@ -130,7 +130,7 @@ function scanTileAssetRefs(text) {
     }
     if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
       const rel = lines[idx + 2]?.trim() ?? "";
-      if (rel.toLowerCase().includes("bus_stop")) scoPaths.add(rel.replace(/\\/g, "/"));
+      if (scoPathLooksBusstop(rel)) scoPaths.add(rel.replace(/\\/g, "/"));
     }
   }
   return { sliPaths, scoPaths };
@@ -818,6 +818,55 @@ export function findOmsiVehicleSpawnRails(rails, splines) {
   return spawn;
 }
 
+function scoPathLooksBusstop(scoRel) {
+  const rel = (scoRel || "").replace(/\\/g, "/").toLowerCase();
+  if (/\/bus_stop\.sco$/i.test(rel)) return true;
+  if (/busstop/i.test(rel) && !/routearrow/i.test(rel) && !/timetable/i.test(rel)) return true;
+  return false;
+}
+
+function scoIsBusstop(scoRel, scoText) {
+  if (scoPathLooksBusstop(scoRel)) return true;
+  return /^\[busstop\]\s*$/im.test(scoText || "");
+}
+
+function dedupeBusstopsByPosition(busstops, graph, splines, splineOrderByTile, eps = 1.5) {
+  const kept = [];
+  const seen = new Set();
+  for (const s of busstops) {
+    const w = busstopWorld(graph, s, splines, splineOrderByTile);
+    const key = `${Math.round(w.x / eps)},${Math.round(w.z / eps)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    kept.push(s);
+  }
+  return kept;
+}
+
+function appendStandaloneObjectBusstops(objects, scoBusstopFlags, busstops) {
+  const seen = new Set(busstops.map((s) => s.id));
+  for (const obj of objects.values()) {
+    if (seen.has(obj.id)) continue;
+    const key = obj.scoRel.replace(/\\/g, "/").toLowerCase();
+    if (!scoBusstopFlags.get(key)) continue;
+    busstops.push({
+      id: obj.id,
+      name: obj.name || `Parada ${obj.id}`,
+      tile: obj.tile,
+      splineListIndex: -1,
+      lateral: 0,
+      heightOff: 0,
+      distAlong: 0,
+      rotation: obj.rotation,
+      standalone: true,
+      x: obj.x,
+      y: obj.y,
+      z: obj.z,
+    });
+    seen.add(obj.id);
+  }
+}
+
 function parseAttachmentName(lines, startIdx) {
   let name = "";
   for (let j = startIdx; j < Math.min(startIdx + 16, lines.length); j += 1) {
@@ -855,6 +904,13 @@ function resolveBusstopParentSpline(stop, splines, splineOrderByTile) {
 function busstopWorld(graph, stop, splines, splineOrderByTile) {
   const tile = parseTileCoords(stop.tile);
   const tileOriginPt = tile ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy) : { x: 0, z: 0 };
+  if (stop.standalone) {
+    return {
+      x: tileOriginPt.x + stop.x,
+      y: stop.z,
+      z: tileOriginPt.z + stop.y,
+    };
+  }
   const sid = resolveBusstopParentSpline(stop, splines, splineOrderByTile);
   const spline = sid ? splines.get(sid) : null;
   if (spline) {
@@ -902,6 +958,7 @@ function ingestTileMap(text, tileName, minTx, minTy, splines, objects, busstops,
           y: safeFloat(lines[idx + 5]),
           z: safeFloat(lines[idx + 6]),
           rotation: safeFloat(lines[idx + 7]),
+          name: parseAttachmentName(lines, idx + 8),
           paths: null,
         });
       }
@@ -912,7 +969,7 @@ function ingestTileMap(text, tileName, minTx, minTy, splines, objects, busstops,
     if (tag === "[splineAttachement]" && lines[idx + 1]?.trim() === "0") {
       const rel = lines[idx + 2]?.trim() ?? "";
       const oid = lines[idx + 3]?.trim() ?? "";
-      if (oid && rel.toLowerCase().includes("bus_stop")) {
+      if (oid && scoPathLooksBusstop(rel)) {
         const splineListIndex = parseInt(lines[idx + 4]?.trim() ?? "0", 10) || 0;
         const name = parseAttachmentName(lines, idx + 9);
         busstops.push({
@@ -1002,6 +1059,7 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
 
 async function loadScoCache(objects, index, omsiPrefix, pool) {
   const scoCache = new Map();
+  const scoBusstopFlags = new Map();
   let scoFound = 0;
   let scoMissing = 0;
   const scoNeeded = new Map();
@@ -1014,8 +1072,8 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
     [...scoNeeded.entries()],
     async ([key, rel]) => {
       const file = resolveFile(index, rel, omsiPrefix);
-      if (!file) return { key, missing: true };
-      return { key, text: await readText(file) };
+      if (!file) return { key, rel, missing: true };
+      return { key, rel, text: await readText(file) };
     },
     IO_CONCURRENCY,
   );
@@ -1024,8 +1082,10 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
   for (const r of readResults) {
     if (r.missing) {
       scoCache.set(r.key, new Map());
+      scoBusstopFlags.set(r.key, scoPathLooksBusstop(r.rel));
       scoMissing += 1;
     } else {
+      scoBusstopFlags.set(r.key, scoIsBusstop(r.rel, r.text));
       toParse.push(r);
       scoFound += 1;
     }
@@ -1046,7 +1106,7 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
     for (const r of toParse) scoCache.set(r.key, parseScoPaths(r.text));
   }
 
-  return { scoCache, scoFound, scoMissing };
+  return { scoCache, scoFound, scoMissing, scoBusstopFlags };
 }
 
 function collectRailWorkItems(splines, objects, sliCache, minTx, minTy) {
@@ -1175,12 +1235,24 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   const { sliCache, sliFound, sliMissing } = await loadSliCache(splines, index, omsiPrefix, pool);
 
   onProgress("Cargando paths .sco…");
-  const { scoCache, scoFound, scoMissing } = await loadScoCache(objects, index, omsiPrefix, pool);
+  const { scoCache, scoFound, scoMissing, scoBusstopFlags } = await loadScoCache(
+    objects,
+    index,
+    omsiPrefix,
+    pool,
+  );
 
   for (const obj of objects.values()) {
     const key = obj.scoRel.replace(/\\/g, "/").toLowerCase();
     obj.paths = scoCache.get(key) || new Map();
   }
+  appendStandaloneObjectBusstops(objects, scoBusstopFlags, busstops);
+  const busstopsDeduped = dedupeBusstopsByPosition(
+    busstops,
+    { minTx, minTy },
+    splines,
+    splineOrderByTile,
+  );
 
   onProgress(pool ? `Generando rieles (${pool.size} workers)…` : "Generando rieles…");
   const { rails, bounds, parallelWorkers } = await generateRails(
@@ -1219,8 +1291,10 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   }));
 
   onProgress("Paradas…");
-  const busstopOut = busstops.map((s) => {
-    const parentSpline = resolveBusstopParentSpline(s, splines, splineOrderByTile);
+  const busstopAttachmentCount = busstopsDeduped.filter((s) => !s.standalone).length;
+  const busstopStandaloneCount = busstopsDeduped.filter((s) => s.standalone).length;
+  const busstopOut = busstopsDeduped.map((s) => {
+    const parentSpline = s.standalone ? "" : resolveBusstopParentSpline(s, splines, splineOrderByTile);
     const w = busstopWorld({ minTx, minTy }, s, splines, splineOrderByTile);
     expandBounds(bounds, w.x, w.z);
     return {
@@ -1234,6 +1308,8 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       parentSpline,
       distAlong: s.distAlong,
       lateral: s.lateral,
+      standalone: !!s.standalone,
+      source: s.standalone ? "object" : "attachment",
     };
   });
 
@@ -1339,6 +1415,8 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       pathLegCount: startCandidates.length,
       connectToleranceM: CONNECT_TOL,
       busstopCount: busstopOut.length,
+      busstopAttachmentCount,
+      busstopStandaloneCount,
       routeCount: routes.length,
       sliFound,
       sliMissing,
