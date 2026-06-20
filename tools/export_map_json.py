@@ -8,6 +8,8 @@ import math
 import os
 import sys
 
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _default_sdk() -> str:
     env = os.environ.get("OMSI_SDK", "").strip()
@@ -153,10 +155,23 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
     from movimiento_calle.path_graph import MapPathGraph
     from movimiento_calle.path_starts import collect_all_rail_endpoints, find_path_starts
     from movimiento_calle.ttdata_ecosystem import collect_trip_ttr_pairs, parse_ttp_file
+    from movimiento_calle.ttdata_repair import map_tiles_dir
     from movimiento_calle.ttdata_updater import parse_ttr, ttdata_dir
 
     map_dir = os.path.abspath(map_dir)
-    graph = MapPathGraph(map_dir, workers=0)
+    tiles_dir = map_tiles_dir(map_dir)
+    if _TOOLS_DIR not in sys.path:
+        sys.path.insert(0, _TOOLS_DIR)
+    from omsi_tile_size import apply_tile_size_to_sdk, tile_size_from_map_dir
+
+    tile_size_m, map_lat = tile_size_from_map_dir(tiles_dir)
+    apply_tile_size_to_sdk(tiles_dir)
+    if map_lat is not None:
+        print(f"[tile] lat={map_lat:.4f}° -> tile={tile_size_m:.2f} m")
+    else:
+        print(f"[tile] sin latitud en [mapcam] -> fallback {tile_size_m:.2f} m")
+
+    graph = MapPathGraph(tiles_dir, workers=0)
 
     rails_raw = collect_all_rail_endpoints(graph, skip_invis=True)
     starts = find_path_starts(graph)
@@ -315,6 +330,8 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
             "freeStartCount": len(free_ids),
             "busstopCount": len(busstops),
             "routeCount": len(routes),
+            "tileSizeM": round(tile_size_m, 3),
+            "mapLatitude": round(map_lat, 3) if map_lat is not None else None,
         },
     }
 

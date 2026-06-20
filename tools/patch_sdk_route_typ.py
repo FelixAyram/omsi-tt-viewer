@@ -26,6 +26,89 @@ def backup(path: str) -> None:
     shutil.copy2(path, f"{path}.{ts}.bak")
 
 
+def patch_tile_size(path: str) -> None:
+    text = open(path, encoding="utf-8").read()
+    if "_resolve_tile_size_m(" in text:
+        print(f"[skip] {path} ya tiene tile size por latitud")
+        return
+
+    helpers = '''
+TILE_SIZE_EQUATOR_M = 611.5
+
+
+def _read_global_cfg_text(cfg_path: str) -> str:
+    for enc in ("utf-8", "utf-16", "utf-16-le", "latin-1"):
+        try:
+            with open(cfg_path, encoding=enc) as handle:
+                return handle.read()
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    with open(cfg_path, encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def _mapcam_latitude_from_cfg(cfg_text: str) -> float | None:
+    lines = cfg_text.replace("\\r\\n", "\\n").replace("\\r", "\\n").split("\\n")
+    in_section = False
+    values: list[str] = []
+    for line in lines:
+        text_line = line.strip()
+        if not text_line:
+            continue
+        if text_line.startswith("["):
+            if text_line.lower() == "[mapcam]":
+                in_section = True
+                continue
+            if in_section:
+                break
+            continue
+        if in_section:
+            values.append(text_line)
+    if len(values) < 5:
+        return None
+    try:
+        lat = float(values[4].replace(",", "."))
+    except ValueError:
+        return None
+    if not math.isfinite(lat) or abs(lat) > 90:
+        return None
+    return lat
+
+
+def _resolve_tile_size_m(copia_path: str) -> float:
+    base = os.path.abspath(copia_path)
+    if os.path.basename(base).lower() == "copia":
+        base = os.path.dirname(base)
+    cfg = os.path.join(base, "global.cfg")
+    if not os.path.isfile(cfg):
+        return TILE_SIZE
+    lat = _mapcam_latitude_from_cfg(_read_global_cfg_text(cfg))
+    if lat is None:
+        return TILE_SIZE
+    return TILE_SIZE_EQUATOR_M * math.cos(math.radians(lat))
+
+'''
+    if "TILE_SIZE = 300.0\n" not in text:
+        raise SystemExit("No se encontro TILE_SIZE = 300.0 en path_graph.py")
+    text = text.replace("TILE_SIZE = 300.0\n", "TILE_SIZE = 300.0\n" + helpers, 1)
+
+    init_marker = "        self._min_tx = 0\n        self._min_ty = 0\n        self._load()"
+    init_patch = (
+        "        self._min_tx = 0\n"
+        "        self._min_ty = 0\n"
+        "        global TILE_SIZE\n"
+        "        TILE_SIZE = _resolve_tile_size_m(copia_path)\n"
+        "        self._tile_size_m = TILE_SIZE\n"
+        "        self._load()"
+    )
+    if init_marker not in text:
+        raise SystemExit("No se encontro MapPathGraph.__init__ en path_graph.py")
+    text = text.replace(init_marker, init_patch, 1)
+    backup(path)
+    open(path, "w", encoding="utf-8", newline="\n").write(text)
+    print(f"[ok] path_graph.py tile size por latitud")
+
+
 def patch_path_graph(path: str) -> None:
     text = open(path, encoding="utf-8").read()
     marker = "    def default_vehicle_spline_path(self, spline_id: str) -> int:"
@@ -328,7 +411,9 @@ def patch_ttr_omsi(path: str) -> None:
 
 def main() -> int:
     root = sdk_root()
-    patch_path_graph(os.path.join(root, "movimiento_calle", "path_graph.py"))
+    pg = os.path.join(root, "movimiento_calle", "path_graph.py")
+    patch_tile_size(pg)
+    patch_path_graph(pg)
     patch_ttr_omsi(os.path.join(root, "movimiento_calle", "ttr_omsi.py"))
     return 0
 

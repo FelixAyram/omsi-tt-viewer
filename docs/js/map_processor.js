@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=40";
-import { readOmsiText } from "./omsi_text.js?v=40";
+} from "./omsi_browser.js?v=41";
+import { readOmsiText } from "./omsi_text.js?v=41";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=40";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=40";
+} from "./geometry.js?v=41";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=41";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,10 +27,12 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=40";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=40";
+} from "./rail_builder.js?v=41";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=41";
 
-const TILE_SIZE = 300;
+/** Ancho de tile en el ecuador (m); OMSI escala por cos(latitud) en [mapcam]. */
+const TILE_SIZE_EQUATOR_M = 611.5;
+const DEFAULT_TILE_SIZE_M = 300;
 const CONNECT_TOL = 0.1;
 const IO_CONCURRENCY = ioConcurrency();
 const ENDPOINT_CELL_M = 2;
@@ -99,10 +101,42 @@ function parseTileCoords(name) {
   return m ? [parseInt(m[1], 10), parseInt(m[2], 10)] : null;
 }
 
-function tileOrigin(tx, ty, minTx, minTy) {
+function tileSizeMeters(latitudeDeg) {
+  return TILE_SIZE_EQUATOR_M * Math.cos((latitudeDeg * Math.PI) / 180);
+}
+
+function parseMapcamLatitude(text) {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  let inSection = false;
+  const values = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith("[")) {
+      if (t.toLowerCase() === "[mapcam]") {
+        inSection = true;
+        continue;
+      }
+      if (inSection) break;
+      continue;
+    }
+    if (inSection) values.push(t);
+  }
+  if (values.length < 5) return null;
+  const lat = safeFloat(values[4], NaN);
+  return Number.isFinite(lat) && Math.abs(lat) <= 90 ? lat : null;
+}
+
+function resolveTileSizeM(globalText) {
+  const lat = parseMapcamLatitude(globalText);
+  if (lat == null) return { tileSizeM: DEFAULT_TILE_SIZE_M, mapLatitude: null };
+  return { tileSizeM: tileSizeMeters(lat), mapLatitude: lat };
+}
+
+function tileOrigin(tx, ty, minTx, minTy, tileSizeM) {
   return {
-    x: (tx - minTx) * TILE_SIZE,
-    z: (ty - minTy) * TILE_SIZE,
+    x: (tx - minTx) * tileSizeM,
+    z: (ty - minTy) * tileSizeM,
   };
 }
 
@@ -904,7 +938,9 @@ function resolveBusstopParentSpline(stop, splines, splineOrderByTile) {
 
 function busstopWorld(graph, stop, splines, splineOrderByTile) {
   const tile = parseTileCoords(stop.tile);
-  const tileOriginPt = tile ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy) : { x: 0, z: 0 };
+  const tileOriginPt = tile
+    ? tileOrigin(tile[0], tile[1], graph.minTx, graph.minTy, graph.tileSizeM)
+    : { x: 0, z: 0 };
   if (stop.standalone) {
     return {
       x: tileOriginPt.x + stop.x,
@@ -939,10 +975,20 @@ function busstopWorld(graph, stop, splines, splineOrderByTile) {
   return { x: tileOriginPt.x + stop.x, y: stop.z + (stop.heightOff || 0), z: tileOriginPt.z + stop.y };
 }
 
-function ingestTileMap(text, tileName, minTx, minTy, splines, objects, busstops, splineOrderByTile) {
+function ingestTileMap(
+  text,
+  tileName,
+  minTx,
+  minTy,
+  tileSizeM,
+  splines,
+  objects,
+  busstops,
+  splineOrderByTile,
+) {
   const lines = text.split(/\r?\n/);
   const coords = parseTileCoords(tileName);
-  const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
+  const origin = tileOrigin(coords[0], coords[1], minTx, minTy, tileSizeM);
   const splineOrder = [];
 
   for (let idx = 0; idx < lines.length; idx += 1) {
@@ -1121,7 +1167,7 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
   return { scoCache, scoFound, scoMissing, scoBusstopFlags };
 }
 
-function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, minTy) {
+function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileSizeM) {
   const splineItems = [];
   for (const sp of splines.values()) {
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
@@ -1137,13 +1183,13 @@ function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, 
   for (const obj of objects.values()) {
     if (!obj.paths?.size) continue;
     const coords = parseTileCoords(obj.tile);
-    const origin = tileOrigin(coords[0], coords[1], minTx, minTy);
+    const origin = tileOrigin(coords[0], coords[1], minTx, minTy, tileSizeM);
     objectItems.push({ obj, origin, pathsEntries: [...obj.paths.entries()] });
   }
   return { splineItems, objectItems };
 }
 
-async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, pool) {
+async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileSizeM, pool) {
   const { splineItems, objectItems } = collectRailWorkItems(
     splines,
     objects,
@@ -1151,6 +1197,7 @@ async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, m
     sliOnlyEditor,
     minTx,
     minTy,
+    tileSizeM,
   );
   const tasks = [];
   const batchSize = railBatchSize(splineItems.length + objectItems.length, pool?.size);
@@ -1215,6 +1262,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   onProgress("Leyendo global.cfg…");
   const globalText = await readText(ctx.globalFile);
   const mapName = parseGlobalName(globalText) || mapDir.split("/").pop();
+  const { tileSizeM, mapLatitude } = resolveTileSizeM(globalText);
 
   const tileFiles = ctx.tilePaths ?? [...fileMap.keys()].filter((p) => {
     const n = normPath(p);
@@ -1246,6 +1294,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       tilePath.split("/").pop(),
       minTx,
       minTy,
+      tileSizeM,
       splines,
       objects,
       busstops,
@@ -1276,7 +1325,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   appendStandaloneObjectBusstops(objects, scoBusstopFlags, busstops);
   const busstopsDeduped = dedupeBusstopsByPosition(
     busstops,
-    { minTx, minTy },
+    { minTx, minTy, tileSizeM },
     splines,
     splineOrderByTile,
   );
@@ -1289,6 +1338,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
     sliOnlyEditor,
     minTx,
     minTy,
+    tileSizeM,
     pool,
   );
 
@@ -1323,7 +1373,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   const busstopStandaloneCount = busstopsDeduped.filter((s) => s.standalone).length;
   const busstopOut = busstopsDeduped.map((s) => {
     const parentSpline = s.standalone ? "" : resolveBusstopParentSpline(s, splines, splineOrderByTile);
-    const w = busstopWorld({ minTx, minTy }, s, splines, splineOrderByTile);
+    const w = busstopWorld({ minTx, minTy, tileSizeM }, s, splines, splineOrderByTile);
     expandBounds(bounds, w.x, w.z);
     return {
       id: s.id,
@@ -1442,6 +1492,8 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       freeLegCount: startCandidates.filter((c) => c.isFreeStart).length,
       pathLegCount: startCandidates.length,
       connectToleranceM: CONNECT_TOL,
+      tileSizeM: Math.round(tileSizeM * 1000) / 1000,
+      mapLatitude: mapLatitude != null ? Math.round(mapLatitude * 1000) / 1000 : null,
       busstopCount: busstopOut.length,
       busstopAttachmentCount,
       busstopStandaloneCount,

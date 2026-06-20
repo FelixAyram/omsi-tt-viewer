@@ -116,6 +116,40 @@ Esto es **solo visualización**; no modifica el `.ttr` en disco.
 
 ---
 
+## Tamaño de tile según latitud
+
+OMSI **no** usa siempre 300 m por tile. El motor comprime el recuadro geográfico hacia los polos (compensación Mercator) mientras los splines conservan su longitud métrica real:
+
+$$\text{tile\_size\_m} = 611{,}5 \times \cos(\text{latitud})$$
+
+| Latitud | Tile aprox. |
+|---------|-------------|
+| 0° (ecuador) | 611,5 m |
+| 30° | ~530 m |
+| 52,5° (Berlín) | ~372 m |
+| 75° (ártico) | ~158 m |
+
+**Fuente de la latitud:** `global.cfg` → sección `[mapcam]` → 5.º valor (`tx`, `ty`, `x`, `y`, **lat**).
+
+Ejemplos medidos en mapas reales:
+
+| Mapa | `[mapcam]` lat | Tile calculado |
+|------|----------------|----------------|
+| Test_Lat30 | ~41,09° | ~461 m |
+| Ahlheim 4 | ~32,24° | ~517 m |
+
+El **visor web** (v41+), `tools/repair_ttr.py` y `tools/export_map_json.py` leen esa latitud al cargar `global.cfg`. Si falta `[mapcam]`, usan **300 m** como fallback (comportamiento legacy).
+
+Parche SDK (una vez, además del de typ de ruta):
+
+```powershell
+python tools/patch_sdk_route_typ.py
+```
+
+Módulo compartido: `tools/omsi_tile_size.py`.
+
+---
+
 ## Mapas enormes (Ahlheim 4)
 
 Aprendizajes del visor **v35** (WebGL):
@@ -187,7 +221,7 @@ Variables de entorno: `OMSI_ROOT`, `OMSI_SDK`, `REPAIR_CPU_WORKERS`.
 1. **Copia de seguridad:** carpeta `TTData` completa (el script crea `TTData_backup_pre_repair` si no existe).
 2. **Auditoría:** `python tools/repair_ttr.py audit ...`
 3. **Reparar:** `python tools/repair_ttr.py repair ...`
-4. **Comprobar en visor:** https://felixayram.github.io/omsi-tt-viewer/ — versión ≥ 35, cargar mapa, revisar panel Rutas (entradas omitidas).
+4. **Comprobar en visor:** https://felixayram.github.io/omsi-tt-viewer/ — versión ≥ 41, cargar mapa, revisar panel Rutas (entradas omitidas). La barra de stats muestra `tile N m (lat X°)`.
 5. **Probar en OMSI:** cargar línea en el simulador; revisar `logfile.txt` si falla `LoadTrack`.
 
 ---
@@ -202,6 +236,7 @@ Variables de entorno: `OMSI_ROOT`, `OMSI_SDK`, `REPAIR_CPU_WORKERS`.
 | Reparador unificado | `tools/repair_ttr.py` |
 | Verificación campos | `tools/_verify_ttr_fields.py` |
 | Export JSON visor | `tools/export_map_json.py` |
+| Tile size / latitud | `tools/omsi_tile_size.py`, `map_processor.js` → `resolveTileSizeM` |
 
 ---
 

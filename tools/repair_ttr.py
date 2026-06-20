@@ -25,6 +25,8 @@ from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
+_TOOLS_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 def _default_sdk() -> str:
     env = os.environ.get("OMSI_SDK", "").strip()
@@ -59,6 +61,19 @@ def _ensure_sdk():
     if sdk not in sys.path:
         sys.path.insert(0, sdk)
     return sdk
+
+
+def _apply_map_tile_size(tiles_dir: str) -> tuple[float, float | None]:
+    if _TOOLS_DIR not in sys.path:
+        sys.path.insert(0, _TOOLS_DIR)
+    from omsi_tile_size import apply_tile_size_to_sdk
+
+    size, lat = apply_tile_size_to_sdk(tiles_dir)
+    if lat is not None:
+        print(f"[tile] lat={lat:.4f}° -> tile={size:.2f} m")
+    else:
+        print(f"[tile] sin latitud en [mapcam] -> fallback {size:.2f} m")
+    return size, lat
 
 
 @dataclass
@@ -230,6 +245,7 @@ def run_audit(map_dir: str, *, workers: int = 0, sample_skips: int = 40) -> dict
     print(f"[audit] tiles: {tiles_dir}")
     print(f"[audit] TTData: {tt_dir}")
     t0 = time.time()
+    _apply_map_tile_size(tiles_dir)
     graph = MapPathGraph(tiles_dir, progress_cb=_log_progress, workers=worker_count)
     print(f"[audit] grafo en {time.time() - t0:.1f}s | {len(graph.splines)} splines, {len(graph.objects)} objetos")
 
@@ -389,6 +405,7 @@ def run_repair(
             backup_dir = None
 
         t0 = time.time()
+        _apply_map_tile_size(tiles_dir)
         graph = MapPathGraph(tiles_dir, progress_cb=_log_progress, workers=worker_count)
         stats = {"files": 0, "changed_files": 0, "changed_entries": 0, "dropped": 0}
         for rel, path in collect_ttr_files(tt_dir):
