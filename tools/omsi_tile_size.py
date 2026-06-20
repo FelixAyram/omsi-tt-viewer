@@ -1,8 +1,9 @@
-"""OMSI 2: métricas de tile alineadas con Unity (omsi path / OmsiMapTileMetrics).
+"""OMSI 2: métricas de tile según el motor (descompilado maps.c / FUN_007f283c).
 
-- Mapas clásicos ``tile_0_0.map`` → 300 m fijos, rejilla uniforme.
-- Mapas globales ``153835.map`` (solo dígitos, ≥5) → latitud del nombre y
-  ``611.5 × cos(lat)`` por tile, con origen mundial acumulado (Mercator).
+- Sin ``[worldcoordinates]`` → 300 m fijos, rejilla uniforme.
+- Con ``[worldcoordinates]`` + ``tile_X_Y`` → ``611.5 × cos(lat(Y_grid))`` donde
+  ``lat`` sale de Mercator inverso con índice Y de ``[map]`` (no ``[mapcam]``).
+- Con ``[worldcoordinates]`` + nombre numérico (``153835.map``) → latitud del nombre.
 """
 from __future__ import annotations
 
@@ -13,8 +14,10 @@ from dataclasses import dataclass
 
 STANDARD_TILE_M = 300.0
 WORLD_EQUATOR_TILE_M = 611.5
+WGS84_R_M = 6378137.0
 
 _TILE_COORDS_RE = re.compile(r"tile_(-?\d+)_(-?\d+)\.map", re.IGNORECASE)
+_WORLD_COORDS_RE = re.compile(r"(?m)^\s*\[worldcoordinates\]\s*$", re.IGNORECASE)
 
 
 def _read_cfg_text(path: str) -> str:
@@ -28,6 +31,11 @@ def _read_cfg_text(path: str) -> str:
         return handle.read()
 
 
+def has_world_coordinates(cfg_text: str) -> bool:
+    """True si global.cfg declara ``[worldcoordinates]`` (flag motor en +0xfc)."""
+    return bool(_WORLD_COORDS_RE.search(cfg_text))
+
+
 def tile_file_stem(path: str) -> str:
     return os.path.splitext(os.path.basename(path.replace("\\", "/")))[0]
 
@@ -39,7 +47,7 @@ def is_global_coordinate_tile_name(stem: str) -> bool:
 
 
 def try_parse_latitude_from_global_tile_name(stem: str) -> float | None:
-    """153835 → 15.3835° (misma regla que Unity OmsiMapTileMetrics)."""
+    """153835 → 15.3835° (tiles con nombre solo numérico)."""
     if not is_global_coordinate_tile_name(stem):
         return None
     code = int(stem)
@@ -50,12 +58,34 @@ def try_parse_latitude_from_global_tile_name(stem: str) -> float | None:
     return None
 
 
-def compute_tile_size_meters(latitude_deg: float, is_global: bool, manual_override: float = 0.0) -> float:
+def latitude_from_grid_y(tile_y: int) -> float:
+    """Latitud en grados a partir del índice Y de ``[map]`` (FUN_007f283c / Mercator)."""
+    merc_y = tile_y * WORLD_EQUATOR_TILE_M
+    lat_rad = 2.0 * math.atan(math.exp(merc_y / WGS84_R_M)) - math.pi / 2.0
+    return math.degrees(lat_rad)
+
+
+def tile_size_from_grid_y(tile_y: int) -> float:
+    """Ancho en metros del tile (motor: FUN_007f283c(tile_Y, 0x10))."""
+    lat_rad = math.radians(latitude_from_grid_y(tile_y))
+    return WORLD_EQUATOR_TILE_M * math.cos(lat_rad)
+
+
+def compute_tile_size_meters(
+    *,
+    latitude_deg: float = 0.0,
+    grid_y: int | None = None,
+    is_numeric_global: bool = False,
+    world_coordinates: bool = False,
+    manual_override: float = 0.0,
+) -> float:
     if manual_override > 0.01:
         return manual_override
-    if not is_global:
-        return STANDARD_TILE_M
-    return WORLD_EQUATOR_TILE_M * math.cos(math.radians(latitude_deg))
+    if is_numeric_global:
+        return WORLD_EQUATOR_TILE_M * math.cos(math.radians(latitude_deg))
+    if world_coordinates and grid_y is not None:
+        return tile_size_from_grid_y(grid_y)
+    return STANDARD_TILE_M
 
 
 def parse_map_entries_from_global_cfg(cfg_text: str) -> list[tuple[int, int, str]]:
@@ -105,18 +135,44 @@ class MapTileMetric:
     relative_path: str
     file_name: str
     is_global: bool = False
+    world_coordinates: bool = False
     latitude_deg: float = 0.0
     tile_size_m: float = STANDARD_TILE_M
     layout_world_x: float = 0.0
     layout_world_z: float = 0.0
 
 
-def apply_tile_metrics(metric: MapTileMetric, manual_override: float = 0.0) -> None:
+def apply_tile_metrics(
+    metric: MapTileMetric,
+    manual_override: float = 0.0,
+    *,
+    map_world_coordinates: bool = False,
+) -> None:
     stem = tile_file_stem(metric.file_name or metric.relative_path)
-    metric.is_global = is_global_coordinate_tile_name(stem)
-    lat = try_parse_latitude_from_global_tile_name(stem)
-    metric.latitude_deg = lat if lat is not None else 0.0
-    metric.tile_size_m = compute_tile_size_meters(metric.latitude_deg, metric.is_global, manual_override)
+    is_numeric_global = is_global_coordinate_tile_name(stem)
+    metric.is_global = is_numeric_global
+    metric.world_coordinates = map_world_coordinates and not is_numeric_global
+
+    if manual_override > 0.01:
+        metric.tile_size_m = manual_override
+        return
+
+    if is_numeric_global:
+        lat = try_parse_latitude_from_global_tile_name(stem)
+        metric.latitude_deg = lat if lat is not None else 0.0
+        metric.tile_size_m = compute_tile_size_meters(
+            latitude_deg=metric.latitude_deg,
+            is_numeric_global=True,
+        )
+        return
+
+    if map_world_coordinates:
+        metric.latitude_deg = latitude_from_grid_y(metric.y)
+        metric.tile_size_m = tile_size_from_grid_y(metric.y)
+        return
+
+    metric.latitude_deg = 0.0
+    metric.tile_size_m = STANDARD_TILE_M
 
 
 def apply_world_layout(metrics: list[MapTileMetric], fallback_m: float = STANDARD_TILE_M) -> None:
@@ -150,8 +206,12 @@ def apply_world_layout(metrics: list[MapTileMetric], fallback_m: float = STANDAR
         metric.layout_world_z = origin_z
 
 
+def uses_mercator_layout(metric: MapTileMetric) -> bool:
+    return metric.is_global or metric.world_coordinates
+
+
 def get_tile_origin(metric: MapTileMetric, min_tx: int, min_ty: int, legacy_uniform: float = STANDARD_TILE_M) -> tuple[float, float]:
-    if metric.layout_world_x > 0.001 or metric.layout_world_z > 0.001 or metric.is_global:
+    if metric.layout_world_x > 0.001 or metric.layout_world_z > 0.001 or uses_mercator_layout(metric):
         return metric.layout_world_x, metric.layout_world_z
     size = legacy_uniform if legacy_uniform > 0.01 else STANDARD_TILE_M
     return (metric.x - min_tx) * size, (metric.y - min_ty) * size
@@ -174,9 +234,10 @@ def build_tile_metrics_from_map_dir(
     *,
     tile_paths: list[str] | None = None,
     manual_override: float = 0.0,
-) -> tuple[list[MapTileMetric], dict[str, MapTileMetric]]:
+) -> tuple[list[MapTileMetric], dict[str, MapTileMetric], bool]:
     cfg_path = resolve_global_cfg_path(map_dir)
     cfg_text = _read_cfg_text(cfg_path) if cfg_path else ""
+    map_world_coordinates = has_world_coordinates(cfg_text) if cfg_text else False
     cfg_entries = parse_map_entries_from_global_cfg(cfg_text) if cfg_text else []
 
     by_name: dict[str, MapTileMetric] = {}
@@ -186,7 +247,7 @@ def build_tile_metrics_from_map_dir(
         for x, y, rel in cfg_entries:
             file_name = os.path.basename(rel.replace("\\", "/"))
             metric = MapTileMetric(x=x, y=y, relative_path=rel, file_name=file_name)
-            apply_tile_metrics(metric, manual_override)
+            apply_tile_metrics(metric, manual_override, map_world_coordinates=map_world_coordinates)
             metrics.append(metric)
             by_name[file_name.lower()] = metric
     elif tile_paths:
@@ -201,25 +262,35 @@ def build_tile_metrics_from_map_dir(
                 relative_path=file_name,
                 file_name=file_name,
             )
-            apply_tile_metrics(metric, manual_override)
+            apply_tile_metrics(metric, manual_override, map_world_coordinates=map_world_coordinates)
             metrics.append(metric)
             by_name[file_name.lower()] = metric
 
     fallback = manual_override if manual_override > 0.01 else STANDARD_TILE_M
     apply_world_layout(metrics, fallback)
-    return metrics, by_name
+    return metrics, by_name, map_world_coordinates
 
 
-def tile_layout_summary(metrics: list[MapTileMetric]) -> dict:
-    classic = sum(1 for m in metrics if not m.is_global)
-    global_ = sum(1 for m in metrics if m.is_global)
-    sample = next((m for m in metrics if m.is_global), None)
+def tile_layout_summary(metrics: list[MapTileMetric], map_world_coordinates: bool = False) -> dict:
+    numeric_global = sum(1 for m in metrics if m.is_global)
+    world_grid = sum(1 for m in metrics if m.world_coordinates)
+    classic = sum(1 for m in metrics if not m.is_global and not m.world_coordinates)
+
+    sample = None
+    if map_world_coordinates and world_grid:
+        sample = next((m for m in metrics if m.world_coordinates), None)
+    elif numeric_global:
+        sample = next((m for m in metrics if m.is_global), None)
+
     return {
         "classicTileCount": classic,
-        "globalTileCount": global_,
+        "globalTileCount": numeric_global,
+        "worldGridTileCount": world_grid,
+        "worldCoordinates": map_world_coordinates,
         "tileCount": len(metrics),
         "tileSizeM": round(sample.tile_size_m, 3) if sample else STANDARD_TILE_M,
         "mapLatitude": round(sample.latitude_deg, 3) if sample else None,
+        "sampleGridY": sample.y if sample else None,
     }
 
 
@@ -236,7 +307,9 @@ def apply_tile_layout_to_sdk(map_dir: str, *, manual_override: float = 0.0) -> d
     else:
         tile_paths = None
 
-    metrics, _ = build_tile_metrics_from_map_dir(tiles_dir, tile_paths=tile_paths, manual_override=manual_override)
+    metrics, _, map_world_coordinates = build_tile_metrics_from_map_dir(
+        tiles_dir, tile_paths=tile_paths, manual_override=manual_override
+    )
     layout: dict[tuple[int, int], tuple[float, float, float]] = {}
     for m in metrics:
         ox, oz = get_tile_origin(m, 0, 0, STANDARD_TILE_M)
@@ -245,6 +318,6 @@ def apply_tile_layout_to_sdk(map_dir: str, *, manual_override: float = 0.0) -> d
     pg.TILE_SIZE = manual_override if manual_override > 0.01 else STANDARD_TILE_M
     if hasattr(pg, "_TILE_LAYOUT"):
         pg._TILE_LAYOUT = layout
-    summary = tile_layout_summary(metrics)
+    summary = tile_layout_summary(metrics, map_world_coordinates)
     summary["layoutTiles"] = len(layout)
     return summary

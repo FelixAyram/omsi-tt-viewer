@@ -1,20 +1,20 @@
-import { APP_VERSION } from "./version.js?v=42";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=42";
+import { APP_VERSION } from "./version.js?v=43";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=43";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=42";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=42";
+} from "./omsi_browser.js?v=43";
+import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=43";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=42";
+} from "./map_renderer.js?v=43";
 import {
   RailWebGLRenderer,
   buildGpuSegmentLayers,
@@ -22,7 +22,7 @@ import {
   buildGpuBusInstances,
   robustViewBounds,
   computeMapOrigin,
-} from "./map_webgl.js?v=42";
+} from "./map_webgl.js?v=43";
 import {
   initDebugPanel,
   debugClear,
@@ -32,7 +32,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=42";
+} from "./debug.js?v=43";
 
 const LARGE_MAP_RAILS = 15000;
 
@@ -441,7 +441,12 @@ function updateStats() {
       ? ` (${s.busstopAttachmentCount ?? 0} att + ${s.busstopStandaloneCount} obj)`
       : "") +
     ` · ${s.routeCount ?? data.routes.length} rutas`;
-  if (s.globalTileCount > 0) {
+  if (s.worldCoordinates && (s.worldGridTileCount ?? 0) > 0) {
+    text += ` · world coords (${s.worldGridTileCount} tiles`;
+    if (s.tileSizeM != null) text += `, ~${s.tileSizeM} m`;
+    if (s.mapLatitude != null) text += `, lat Y=${s.sampleGridY ?? "?"} → ${s.mapLatitude}°`;
+    text += ")";
+  } else if (s.globalTileCount > 0) {
     text += ` · ${s.globalTileCount} tiles globales`;
     if (s.tileSizeM != null) text += ` (~${s.tileSizeM} m`;
     if (s.mapLatitude != null) text += `, lat ${s.mapLatitude}°`;

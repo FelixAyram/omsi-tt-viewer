@@ -69,13 +69,19 @@ def _apply_map_tile_size(tiles_dir: str) -> dict:
     from omsi_tile_size import apply_tile_layout_to_sdk, build_tile_metrics_from_map_dir, tile_layout_summary
 
     summary = apply_tile_layout_to_sdk(tiles_dir)
-    if summary.get("globalTileCount", 0) > 0:
+    if summary.get("worldCoordinates") and summary.get("worldGridTileCount", 0) > 0:
         print(
-            f"[tile] globales={summary['globalTileCount']} clásicos={summary['classicTileCount']} "
+            f"[tile] world coordinates: {summary['worldGridTileCount']} tiles "
+            f"(Y={summary.get('sampleGridY')} → lat {summary.get('mapLatitude')}° "
+            f"→ {summary.get('tileSizeM')} m, layout Mercator)"
+        )
+    elif summary.get("globalTileCount", 0) > 0:
+        print(
+            f"[tile] tiles numéricos globales={summary['globalTileCount']} "
             f"ej. lat={summary.get('mapLatitude')}° → {summary.get('tileSizeM')} m"
         )
     else:
-        print(f"[tile] mapa clásico tile_* → {summary.get('tileSizeM', 300)} m por tile")
+        print(f"[tile] mapa clásico → {summary.get('tileSizeM', 300)} m por tile")
     return summary
 
 

@@ -164,17 +164,21 @@ def export_map(map_dir: str, out_path: str, *, compact: bool = True) -> dict:
         sys.path.insert(0, _TOOLS_DIR)
     from omsi_tile_size import apply_tile_layout_to_sdk, build_tile_metrics_from_map_dir, tile_layout_summary
 
-    metrics, _ = build_tile_metrics_from_map_dir(tiles_dir)
-    layout_summary = tile_layout_summary(metrics)
+    metrics, _, map_world_coordinates = build_tile_metrics_from_map_dir(tiles_dir)
+    layout_summary = tile_layout_summary(metrics, map_world_coordinates)
     apply_tile_layout_to_sdk(tiles_dir)
-    if layout_summary.get("globalTileCount", 0) > 0:
+    if layout_summary.get("worldCoordinates") and layout_summary.get("worldGridTileCount", 0) > 0:
+        print(
+            f"[tile] world coordinates: {layout_summary['worldGridTileCount']} tiles "
+            f"→ {layout_summary.get('tileSizeM')} m (Y={layout_summary.get('sampleGridY')})"
+        )
+    elif layout_summary.get("globalTileCount", 0) > 0:
         print(
             f"[tile] globales={layout_summary['globalTileCount']} "
-            f"clásicos={layout_summary['classicTileCount']} "
             f"ej. {layout_summary.get('tileSizeM')} m"
         )
     else:
-        print(f"[tile] mapa clásico tile_* → {layout_summary.get('tileSizeM', 300)} m")
+        print(f"[tile] mapa clásico → {layout_summary.get('tileSizeM', 300)} m")
 
     graph = MapPathGraph(tiles_dir, workers=0)
 

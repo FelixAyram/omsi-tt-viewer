@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=42";
-import { readOmsiText } from "./omsi_text.js?v=42";
+} from "./omsi_browser.js?v=43";
+import { readOmsiText } from "./omsi_text.js?v=43";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=42";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=42";
+} from "./geometry.js?v=43";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=43";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,12 +27,13 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=42";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=42";
+} from "./rail_builder.js?v=43";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=43";
 
-/** Métricas OMSI (Unity omsi path / OmsiMapTileMetrics). */
+/** Métricas OMSI según motor (maps.c / FUN_007f283c). */
 const STANDARD_TILE_M = 300;
 const WORLD_EQUATOR_TILE_M = 611.5;
+const WGS84_R_M = 6378137;
 const CONNECT_TOL = 0.1;
 const IO_CONCURRENCY = ioConcurrency();
 const ENDPOINT_CELL_M = 2;
@@ -116,10 +117,34 @@ function parseLatitudeFromGlobalTileName(stem) {
   return null;
 }
 
-function computeTileSizeMeters(latitudeDeg, isGlobal, manualOverride = 0) {
+function hasWorldCoordinates(globalText) {
+  return /^\s*\[worldcoordinates\]\s*$/im.test(globalText);
+}
+
+function latitudeFromGridY(tileY) {
+  const mercY = tileY * WORLD_EQUATOR_TILE_M;
+  const latRad = 2 * Math.atan(Math.exp(mercY / WGS84_R_M)) - Math.PI / 2;
+  return (latRad * 180) / Math.PI;
+}
+
+function tileSizeFromGridY(tileY) {
+  const latRad = (latitudeFromGridY(tileY) * Math.PI) / 180;
+  return WORLD_EQUATOR_TILE_M * Math.cos(latRad);
+}
+
+function computeTileSizeMeters({
+  latitudeDeg = 0,
+  gridY = null,
+  isNumericGlobal = false,
+  worldCoordinates = false,
+  manualOverride = 0,
+} = {}) {
   if (manualOverride > 0.01) return manualOverride;
-  if (!isGlobal) return STANDARD_TILE_M;
-  return WORLD_EQUATOR_TILE_M * Math.cos((latitudeDeg * Math.PI) / 180);
+  if (isNumericGlobal) {
+    return WORLD_EQUATOR_TILE_M * Math.cos((latitudeDeg * Math.PI) / 180);
+  }
+  if (worldCoordinates && gridY != null) return tileSizeFromGridY(gridY);
+  return STANDARD_TILE_M;
 }
 
 function parseMapEntriesFromGlobalCfg(text) {
@@ -156,15 +181,30 @@ function parseMapEntriesFromGlobalCfg(text) {
   return entries;
 }
 
-function applyTileMetric(entry, manualOverride = 0) {
+function applyTileMetric(entry, mapWorldCoordinates = false, manualOverride = 0) {
   const stem = (entry.fileName || "").replace(/\.map$/i, "");
-  const isGlobal = isGlobalCoordinateTileName(stem);
-  const lat = parseLatitudeFromGlobalTileName(stem);
+  const isNumericGlobal = isGlobalCoordinateTileName(stem);
+  const worldCoordinates = mapWorldCoordinates && !isNumericGlobal;
+  const latFromName = parseLatitudeFromGlobalTileName(stem);
+  let latitudeDeg = 0;
+  let tileSizeM = STANDARD_TILE_M;
+
+  if (manualOverride > 0.01) {
+    tileSizeM = manualOverride;
+  } else if (isNumericGlobal) {
+    latitudeDeg = latFromName ?? 0;
+    tileSizeM = computeTileSizeMeters({ latitudeDeg, isNumericGlobal: true });
+  } else if (worldCoordinates) {
+    latitudeDeg = latitudeFromGridY(entry.y);
+    tileSizeM = tileSizeFromGridY(entry.y);
+  }
+
   return {
     ...entry,
-    isGlobal,
-    latitudeDeg: lat ?? 0,
-    tileSizeM: computeTileSizeMeters(lat ?? 0, isGlobal, manualOverride),
+    isGlobal: isNumericGlobal,
+    worldCoordinates,
+    latitudeDeg,
+    tileSizeM,
     layoutWorldX: 0,
     layoutWorldZ: 0,
   };
@@ -198,7 +238,12 @@ function applyWorldLayout(metrics, fallbackM = STANDARD_TILE_M) {
 }
 
 function getTileOriginFromMetric(metric, minTx, minTy, legacyUniform = STANDARD_TILE_M) {
-  if (metric.layoutWorldX > 0.001 || metric.layoutWorldZ > 0.001 || metric.isGlobal) {
+  if (
+    metric.layoutWorldX > 0.001 ||
+    metric.layoutWorldZ > 0.001 ||
+    metric.isGlobal ||
+    metric.worldCoordinates
+  ) {
     return { x: metric.layoutWorldX, z: metric.layoutWorldZ };
   }
   const size = legacyUniform > 0.01 ? legacyUniform : STANDARD_TILE_M;
@@ -206,30 +251,45 @@ function getTileOriginFromMetric(metric, minTx, minTy, legacyUniform = STANDARD_
 }
 
 function buildTileLayoutMap(globalText, tileFiles) {
+  const mapWorldCoordinates = hasWorldCoordinates(globalText);
   const cfgEntries = parseMapEntriesFromGlobalCfg(globalText);
   let metrics = [];
   if (cfgEntries.length) {
-    metrics = cfgEntries.map((e) => applyTileMetric(e));
+    metrics = cfgEntries.map((e) => applyTileMetric(e, mapWorldCoordinates));
   } else {
     for (const tilePath of tileFiles) {
       const fileName = tilePath.split("/").pop();
       const coords = parseTileCoords(fileName);
       if (!coords) continue;
-      metrics.push(applyTileMetric({ x: coords[0], y: coords[1], relativePath: fileName, fileName }));
+      metrics.push(
+        applyTileMetric(
+          { x: coords[0], y: coords[1], relativePath: fileName, fileName },
+          mapWorldCoordinates,
+        ),
+      );
     }
   }
   applyWorldLayout(metrics);
   const byName = new Map();
   for (const m of metrics) byName.set(m.fileName.toLowerCase(), m);
-  const classicTileCount = metrics.filter((m) => !m.isGlobal).length;
+  const classicTileCount = metrics.filter((m) => !m.isGlobal && !m.worldCoordinates).length;
   const globalTileCount = metrics.filter((m) => m.isGlobal).length;
+  const worldGridTileCount = metrics.filter((m) => m.worldCoordinates).length;
+  const sampleWorld =
+    mapWorldCoordinates && worldGridTileCount
+      ? metrics.find((m) => m.worldCoordinates)
+      : null;
   const sampleGlobal = metrics.find((m) => m.isGlobal);
+  const sample = sampleWorld ?? sampleGlobal;
   return {
     byName,
     classicTileCount,
     globalTileCount,
-    tileSizeM: sampleGlobal?.tileSizeM ?? STANDARD_TILE_M,
-    mapLatitude: sampleGlobal?.latitudeDeg ?? null,
+    worldGridTileCount,
+    worldCoordinates: mapWorldCoordinates,
+    tileSizeM: sample?.tileSizeM ?? STANDARD_TILE_M,
+    mapLatitude: sample?.latitudeDeg ?? null,
+    sampleGridY: sample?.y ?? null,
   };
 }
 
@@ -1614,6 +1674,9 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
       mapLatitude: tileLayout.mapLatitude != null ? Math.round(tileLayout.mapLatitude * 1000) / 1000 : null,
       classicTileCount: tileLayout.classicTileCount,
       globalTileCount: tileLayout.globalTileCount,
+      worldGridTileCount: tileLayout.worldGridTileCount,
+      worldCoordinates: tileLayout.worldCoordinates,
+      sampleGridY: tileLayout.sampleGridY,
       busstopCount: busstopOut.length,
       busstopAttachmentCount,
       busstopStandaloneCount,
