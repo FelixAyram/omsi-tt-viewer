@@ -1,5 +1,5 @@
 /** Pool reutilizable de Web Workers con cola de tareas. */
-import { hardwareThreads } from "../parallel.js?v=38";
+import { hardwareThreads } from "../parallel.js?v=39";
 
 export function defaultPoolSize() {
   const cores = hardwareThreads();

@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=38";
-import { readOmsiText } from "./omsi_text.js?v=38";
+} from "./omsi_browser.js?v=39";
+import { readOmsiText } from "./omsi_text.js?v=39";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=38";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=38";
+} from "./geometry.js?v=39";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=39";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -22,12 +22,13 @@ import {
   PATH_DIR_BOTH,
   railKey,
   parseSliPaths,
+  parseSliFile,
   parseScoPaths,
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=38";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=38";
+} from "./rail_builder.js?v=39";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=39";
 
 const TILE_SIZE = 300;
 const CONNECT_TOL = 0.1;
@@ -1010,6 +1011,7 @@ const DEFAULT_SLI_PATHS = new Map([
 
 async function loadSliCache(splines, index, omsiPrefix, pool) {
   const sliCache = new Map();
+  const sliOnlyEditor = new Map();
   let sliFound = 0;
   let sliMissing = 0;
   const unique = new Map();
@@ -1032,6 +1034,7 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
   for (const r of readResults) {
     if (r.missing) {
       sliCache.set(r.key, new Map(DEFAULT_SLI_PATHS));
+      sliOnlyEditor.set(r.key, false);
       sliMissing += 1;
     } else {
       toParse.push(r);
@@ -1046,15 +1049,24 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
       );
       for (const p of parsed) {
         sliCache.set(p.key, new Map(p.pathsEntries));
+        sliOnlyEditor.set(p.key, !!p.onlyEditor);
       }
     } catch {
-      for (const r of toParse) sliCache.set(r.key, parseSliPaths(r.text));
+      for (const r of toParse) {
+        const parsed = parseSliFile(r.text);
+        sliCache.set(r.key, parsed.paths);
+        sliOnlyEditor.set(r.key, parsed.onlyEditor);
+      }
     }
   } else {
-    for (const r of toParse) sliCache.set(r.key, parseSliPaths(r.text));
+    for (const r of toParse) {
+      const parsed = parseSliFile(r.text);
+      sliCache.set(r.key, parsed.paths);
+      sliOnlyEditor.set(r.key, parsed.onlyEditor);
+    }
   }
 
-  return { sliCache, sliFound, sliMissing };
+  return { sliCache, sliOnlyEditor, sliFound, sliMissing };
 }
 
 async function loadScoCache(objects, index, omsiPrefix, pool) {
@@ -1109,12 +1121,16 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
   return { scoCache, scoFound, scoMissing, scoBusstopFlags };
 }
 
-function collectRailWorkItems(splines, objects, sliCache, minTx, minTy) {
+function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, minTy) {
   const splineItems = [];
   for (const sp of splines.values()) {
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
     const paths = sliCache.get(sliKey) || DEFAULT_SLI_PATHS;
-    splineItems.push({ sp, pathsEntries: [...paths.entries()] });
+    splineItems.push({
+      sp,
+      pathsEntries: [...paths.entries()],
+      onlyEditor: sliOnlyEditor.get(sliKey) ?? false,
+    });
   }
 
   const objectItems = [];
@@ -1127,8 +1143,15 @@ function collectRailWorkItems(splines, objects, sliCache, minTx, minTy) {
   return { splineItems, objectItems };
 }
 
-async function generateRails(splines, objects, sliCache, minTx, minTy, pool) {
-  const { splineItems, objectItems } = collectRailWorkItems(splines, objects, sliCache, minTx, minTy);
+async function generateRails(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, pool) {
+  const { splineItems, objectItems } = collectRailWorkItems(
+    splines,
+    objects,
+    sliCache,
+    sliOnlyEditor,
+    minTx,
+    minTy,
+  );
   const tasks = [];
   const batchSize = railBatchSize(splineItems.length + objectItems.length, pool?.size);
   for (let i = 0; i < splineItems.length; i += batchSize) {
@@ -1231,7 +1254,12 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   }
 
   onProgress("Cargando paths .sli…");
-  const { sliCache, sliFound, sliMissing } = await loadSliCache(splines, index, omsiPrefix, pool);
+  const { sliCache, sliOnlyEditor, sliFound, sliMissing } = await loadSliCache(
+    splines,
+    index,
+    omsiPrefix,
+    pool,
+  );
 
   onProgress("Cargando paths .sco…");
   const { scoCache, scoFound, scoMissing, scoBusstopFlags } = await loadScoCache(
@@ -1258,6 +1286,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
     splines,
     objects,
     sliCache,
+    sliOnlyEditor,
     minTx,
     minTy,
     pool,

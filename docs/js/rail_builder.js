@@ -1,5 +1,5 @@
 /** Generación de rieles compartida entre hilo principal y Web Workers. */
-import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=38";
+import { sampleSplineRail, sampleScoRail, expandBounds } from "./geometry.js?v=39";
 
 export const VEHICLE_TYP = 0;
 export const PATH_DIR_FORWARD = 0;
@@ -20,6 +20,11 @@ export function mirrorAdjustedDirection(direction, isMirrored) {
 }
 
 export function parseSliPaths(text) {
+  return parseSliFile(text).paths;
+}
+
+/** .sli con [onlyeditor] y al menos un [path] — paths de circulación solo visibles en editor. */
+export function parseSliFile(text) {
   const lines = text.split(/\r?\n/);
   const out = new Map();
   let idx = 0;
@@ -52,7 +57,8 @@ export function parseSliPaths(text) {
     }
     idx = j;
   }
-  return out;
+  const onlyEditor = /^\[onlyeditor\]\s*$/im.test(text) && out.size > 0;
+  return { paths: out, onlyEditor };
 }
 
 export function parseScoPaths(text) {
@@ -112,11 +118,11 @@ const DEFAULT_SLI_PATH = [
   [0, { typ: 0, lateral: 0, height: 0, direction: PATH_DIR_BOTH }],
 ];
 
-/** @param {{ sp: object, pathsEntries: [number, object][] }[]} items */
+/** @param {{ sp: object, pathsEntries: [number, object][], onlyEditor?: boolean }[]} items */
 export function buildSplineRails(items) {
   const rails = [];
   const bounds = emptyBounds();
-  for (const { sp, pathsEntries } of items) {
+  for (const { sp, pathsEntries, onlyEditor = false } of items) {
     const paths = pathsFromEntries(pathsEntries);
     if (!paths.size) {
       for (const [pidx, meta] of new Map(DEFAULT_SLI_PATH)) {
@@ -141,6 +147,7 @@ export function buildSplineRails(items) {
         isSplineH: sp.isSplineH ?? false,
         isMirrored: sp.isMirrored ?? false,
         invis: sp.isInvis ?? false,
+        onlyEditor,
         tile: sp.tile,
         points,
         start: points[0],
