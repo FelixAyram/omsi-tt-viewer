@@ -19,9 +19,26 @@ Controles: arrastrar = mover, rueda = zoom, clic = detalle del riel.
 python tools/export_map_json.py "F:\SteamLibrary\steamapps\common\OMSI 2\maps\Test_Lat30"
 ```
 
+## Exportar un mapa (local)
+
+```powershell
+python tools/export_map_json.py "F:\SteamLibrary\steamapps\common\OMSI 2\maps\Test_Lat30"
+```
+
 Genera `docs/data/<nombre_mapa>.json`. Añade una entrada en `docs/data/manifest.json` para publicarla en Pages, o sube el JSON directamente en el navegador.
 
-Variable opcional `OMSI_SDK` si el SDK no está en la ruta por defecto de Steam.
+Variables opcionales: `OMSI_SDK`, `OMSI_ROOT`.
+
+## Reparar rutas `.ttr`
+
+Auditoría y reparación alineadas con el visor (SDK `movimiento_calle`):
+
+```powershell
+python tools/repair_ttr.py audit "F:\SteamLibrary\steamapps\common\OMSI 2\maps\Ahlheim 4"
+python tools/repair_ttr.py repair "F:\SteamLibrary\steamapps\common\OMSI 2\maps\Ahlheim 4"
+```
+
+Documentación completa: [docs/TTR.md](docs/TTR.md)
 
 ## Desarrollo local
 
@@ -35,7 +52,9 @@ Abre http://localhost:8080
 ## Estructura
 
 - `docs/` — sitio estático (GitHub Pages)
+- `docs/TTR.md` — formato `.ttr`, reparación y reglas del visor
 - `tools/export_map_json.py` — exportador desde mapa OMSI
+- `tools/repair_ttr.py` — auditoría y reparación de `.ttr`
 - `.github/workflows/pages.yml` — despliegue automático
 
 Los datos del mapa no se leen del disco en el navegador: hay que exportar JSON con el script Python.
