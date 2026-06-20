@@ -225,6 +225,7 @@ export function computeMapOrigin(bounds) {
 
 export async function buildGpuSegmentLayers(rails, {
   railTyp,
+  splineTyp,
   freeStartHex,
   spawnSegmentFn,
   onProgress,
@@ -234,14 +235,16 @@ export async function buildGpuSegmentLayers(rails, {
   const base = [];
   const free = [];
   const total = rails.length;
+  const splinePalette = splineTyp || railTyp;
 
   for (let i = 0; i < total; i += 1) {
     const rail = rails[i];
     const pts = subsamplePoints(railLinePoints(rail, spawnSegmentFn));
     if (pts.length < 2) continue;
 
-    const typ = railTyp[rail.typ] || railTyp[0];
-    const width = rail.invis || rail.onlyEditor ? 2 : 1.6;
+    const palette = rail.kind === "spline" ? splinePalette : railTyp;
+    const typ = palette[rail.typ] || palette[0];
+    const width = rail.kind === "spline" ? 2.8 : 2.0;
     pushSegments(base, pts, hexToRgba(typ.stroke), width, origin);
 
     if (rail.freeStart) {
@@ -490,8 +493,8 @@ export class RailWebGLRenderer {
     };
 
     let drawn = 0;
-    if (showAll && !freeOnly) drawn += this.baseLayer.draw(pack);
-    if ((showAll && !freeOnly) || freeOnly) drawn += this.freeLayer.draw(pack);
+    drawn += this.baseLayer.draw(pack);
+    drawn += this.freeLayer.draw(pack);
     drawn += this.overlayLayer.draw(pack);
 
     if (showBusstops && this.busLayer.count > 0) {

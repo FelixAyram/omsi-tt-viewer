@@ -6,15 +6,15 @@ import {
   buildMapFileMapWebkit,
   buildMapFileMapWebkitCombined,
   ensureMapRootInFileMap,
-} from "./omsi_browser.js?v=44";
-import { readOmsiAnsiText, readOmsiText } from "./omsi_text.js?v=44";
+} from "./omsi_browser.js?v=46";
+import { readOmsiAnsiText, readOmsiText } from "./omsi_text.js?v=46";
 import {
   expandBounds,
   dirFromRotation,
   splineLocalAt,
   perpOffset,
-} from "./geometry.js?v=44";
-import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=44";
+} from "./geometry.js?v=46";
+import { runInParallel, ioConcurrency, hardwareThreads } from "./parallel.js?v=46";
 import {
   VEHICLE_TYP,
   PATH_DIR_FORWARD,
@@ -27,8 +27,8 @@ import {
   buildSplineRails,
   buildScoRails,
   mergeBounds,
-} from "./rail_builder.js?v=44";
-import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=44";
+} from "./rail_builder.js?v=46";
+import { createMapWorkerPool, defaultPoolSize } from "./workers/worker_pool.js?v=46";
 
 /** Métricas OMSI según motor (maps.c / FUN_007f283c). */
 const STANDARD_TILE_M = 300;
@@ -1229,9 +1229,137 @@ const DEFAULT_SLI_PATHS = new Map([
   [0, { typ: 0, lateral: 0, height: 0, direction: PATH_DIR_BOTH }],
 ]);
 
+function sliFileBasename(relPath) {
+  return relPath.replace(/\\/g, "/").split("/").pop();
+}
+
+/** Diagnóstico: paths por .sli/.sco y rieles generados por spline/object id. */
+export function buildRailLoadReport({ splines, objects, rails, sliByFile, scoByFile }) {
+  const railsBySplineId = new Map();
+  const railsByObjectId = new Map();
+  for (const r of rails) {
+    if (r.kind === "spline") {
+      railsBySplineId.set(r.elementId, (railsBySplineId.get(r.elementId) || 0) + 1);
+    } else if (r.kind === "object") {
+      railsByObjectId.set(r.elementId, (railsByObjectId.get(r.elementId) || 0) + 1);
+    }
+  }
+
+  const splineRows = [];
+  for (const sp of [...splines.values()].sort((a, b) => a.id - b.id)) {
+    const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
+    const meta = sliByFile?.get(sliKey) || {};
+    const sliPaths = meta.pathCount ?? 0;
+    const railCount = railsBySplineId.get(sp.id) || 0;
+    splineRows.push({
+      id: sp.id,
+      tile: sp.tile,
+      sli: sliFileBasename(sp.path),
+      sliRel: sp.path,
+      sliPaths,
+      rails: railCount,
+      missing: !!meta.missing,
+      onlyEditor: !!meta.onlyEditor,
+      usedDefault: !!meta.usedDefault,
+      invis: !!sp.isInvis,
+      mirror: !!sp.isMirrored,
+    });
+  }
+
+  const objectRows = [];
+  for (const obj of [...objects.values()].sort((a, b) => a.id - b.id)) {
+    const scoKey = obj.scoRel.replace(/\\/g, "/").toLowerCase();
+    const meta = scoByFile?.get(scoKey) || {};
+    const scoPaths = obj.paths?.size ?? meta.pathCount ?? 0;
+    const railCount = railsByObjectId.get(obj.id) || 0;
+    objectRows.push({
+      id: obj.id,
+      tile: obj.tile,
+      sco: sliFileBasename(obj.scoRel),
+      scoRel: obj.scoRel,
+      scoPaths,
+      rails: railCount,
+      missing: !!meta.missing,
+      busstop: !!meta.isBusstop,
+    });
+  }
+
+  const splineRailTotal = rails.filter((r) => r.kind === "spline").length;
+  const objectRailTotal = rails.filter((r) => r.kind === "object").length;
+  const uniqueSli = sliByFile?.size ?? 0;
+  const sliMissingCount = [...(sliByFile?.values() || [])].filter((m) => m.missing).length;
+  const scoMissingCount = [...(scoByFile?.values() || [])].filter((m) => m.missing).length;
+  const splinesWithRails = splineRows.filter((r) => r.rails > 0).length;
+  const objectsWithRails = objectRows.filter((r) => r.rails > 0).length;
+  const objectsNoPaths = objectRows.filter((r) => r.scoPaths === 0).length;
+
+  const summary = {
+    splineCount: splines.size,
+    splinesWithRails,
+    splineRailTotal,
+    uniqueSli,
+    sliMissingCount,
+    objectCount: objects.size,
+    objectsWithRails,
+    objectsNoPaths,
+    objectRailTotal,
+    uniqueSco: scoByFile?.size ?? 0,
+    scoMissingCount,
+    totalRails: rails.length,
+  };
+
+  const lines = [
+    "=== Carga splines (.sli) ===",
+    `Splines en .map: ${summary.splineCount} · con rieles: ${summary.splinesWithRails}`,
+    `Archivos .sli únicos: ${summary.uniqueSli} (faltan ${summary.sliMissingCount})`,
+    `Rieles spline: ${summary.splineRailTotal}`,
+    "",
+    "=== Carga objects (.sco) ===",
+    `Objects en .map: ${summary.objectCount} · con rieles: ${summary.objectsWithRails}`,
+    `Archivos .sco únicos: ${summary.uniqueSco} (faltan ${summary.scoMissingCount})`,
+    `Sin paths .sco: ${summary.objectsNoPaths}`,
+    `Rieles object: ${summary.objectRailTotal}`,
+    "",
+    `Total rieles: ${summary.totalRails}`,
+    "",
+    "--- Splines (id · tile · .sli · paths → rieles) ---",
+  ];
+  for (const row of splineRows) {
+    const flags = [
+      row.missing ? "MISSING" : null,
+      row.onlyEditor ? "onlyEditor" : null,
+      row.usedDefault ? "defaultPath" : null,
+      row.invis ? "invis" : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    lines.push(
+      `spline ${row.id} · ${row.tile} · ${row.sli} · ${row.sliPaths} paths → ${row.rails} rieles` +
+        (flags ? ` [${flags}]` : ""),
+    );
+  }
+  lines.push("", "--- Objects (id · tile · .sco · paths → rieles) ---");
+  for (const row of objectRows) {
+    const flags = [
+      row.missing ? "MISSING" : null,
+      row.busstop ? "busstop" : null,
+      row.scoPaths === 0 ? "sin paths" : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    lines.push(
+      `object ${row.id} · ${row.tile} · ${row.sco} · ${row.scoPaths} paths → ${row.rails} rieles` +
+        (flags ? ` [${flags}]` : ""),
+    );
+  }
+
+  return { summary, splineRows, objectRows, lines };
+}
+
 async function loadSliCache(splines, index, omsiPrefix, pool) {
   const sliCache = new Map();
   const sliOnlyEditor = new Map();
+  const sliByFile = new Map();
   let sliFound = 0;
   let sliMissing = 0;
   const unique = new Map();
@@ -1244,8 +1372,8 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
     [...unique.entries()],
     async ([key, relPath]) => {
       const file = resolveFile(index, relPath, omsiPrefix);
-      if (!file) return { key, missing: true };
-      return { key, text: await readAnsiText(file) };
+      if (!file) return { key, relPath, missing: true };
+      return { key, relPath, text: await readAnsiText(file) };
     },
     IO_CONCURRENCY,
   );
@@ -1255,6 +1383,13 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
     if (r.missing) {
       sliCache.set(r.key, new Map(DEFAULT_SLI_PATHS));
       sliOnlyEditor.set(r.key, false);
+      sliByFile.set(r.key, {
+        relPath: r.relPath,
+        pathCount: DEFAULT_SLI_PATHS.size,
+        onlyEditor: false,
+        missing: true,
+        usedDefault: true,
+      });
       sliMissing += 1;
     } else {
       toParse.push(r);
@@ -1262,10 +1397,19 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
     }
   }
 
-  const storeSliParsed = (key, parsed) => {
-    const paths = parsed.paths?.size ? parsed.paths : new Map(DEFAULT_SLI_PATHS);
+  const storeSliParsed = (key, relPath, parsed) => {
+    const rawCount = parsed.paths?.size ?? 0;
+    const usedDefault = !rawCount;
+    const paths = rawCount ? parsed.paths : new Map(DEFAULT_SLI_PATHS);
     sliCache.set(key, paths);
     sliOnlyEditor.set(key, !!parsed.onlyEditor);
+    sliByFile.set(key, {
+      relPath,
+      pathCount: paths.size,
+      onlyEditor: !!parsed.onlyEditor,
+      missing: false,
+      usedDefault,
+    });
   };
 
   if (pool && toParse.length) {
@@ -1274,25 +1418,30 @@ async function loadSliCache(splines, index, omsiPrefix, pool) {
         toParse.map((r) => ({ type: "parseSli", key: r.key, text: r.text })),
       );
       for (const p of parsed) {
-        storeSliParsed(p.key, { paths: new Map(p.pathsEntries), onlyEditor: p.onlyEditor });
+        const relPath = unique.get(p.key) || p.key;
+        storeSliParsed(p.key, relPath, {
+          paths: new Map(p.pathsEntries),
+          onlyEditor: p.onlyEditor,
+        });
       }
     } catch {
       for (const r of toParse) {
-        storeSliParsed(r.key, parseSliFile(r.text));
+        storeSliParsed(r.key, r.relPath, parseSliFile(r.text));
       }
     }
   } else {
     for (const r of toParse) {
-      storeSliParsed(r.key, parseSliFile(r.text));
+      storeSliParsed(r.key, r.relPath, parseSliFile(r.text));
     }
   }
 
-  return { sliCache, sliOnlyEditor, sliFound, sliMissing };
+  return { sliCache, sliOnlyEditor, sliFound, sliMissing, sliByFile };
 }
 
 async function loadScoCache(objects, index, omsiPrefix, pool) {
   const scoCache = new Map();
   const scoBusstopFlags = new Map();
+  const scoByFile = new Map();
   let scoFound = 0;
   let scoMissing = 0;
   const scoNeeded = new Map();
@@ -1315,14 +1464,27 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
   for (const r of readResults) {
     if (r.missing) {
       scoCache.set(r.key, new Map());
-      scoBusstopFlags.set(r.key, scoPathLooksBusstop(r.rel));
+      const isBusstop = scoPathLooksBusstop(r.rel);
+      scoBusstopFlags.set(r.key, isBusstop);
+      scoByFile.set(r.key, { relPath: r.rel, pathCount: 0, missing: true, isBusstop });
       scoMissing += 1;
     } else {
-      scoBusstopFlags.set(r.key, scoIsBusstop(r.rel, r.text));
+      const isBusstop = scoIsBusstop(r.rel, r.text);
+      scoBusstopFlags.set(r.key, isBusstop);
       toParse.push(r);
       scoFound += 1;
     }
   }
+
+  const storeScoParsed = (key, relPath, paths) => {
+    scoCache.set(key, paths);
+    scoByFile.set(key, {
+      relPath,
+      pathCount: paths.size,
+      missing: false,
+      isBusstop: scoBusstopFlags.get(key) ?? false,
+    });
+  };
 
   if (pool && toParse.length) {
     try {
@@ -1330,26 +1492,41 @@ async function loadScoCache(objects, index, omsiPrefix, pool) {
         toParse.map((r) => ({ type: "parseSco", key: r.key, text: r.text })),
       );
       for (const p of parsed) {
-        scoCache.set(p.key, new Map(p.pathsEntries));
+        const relPath = scoNeeded.get(p.key) || p.key;
+        storeScoParsed(p.key, relPath, new Map(p.pathsEntries));
       }
     } catch {
-      for (const r of toParse) scoCache.set(r.key, parseScoPaths(r.text));
+      for (const r of toParse) storeScoParsed(r.key, r.rel, parseScoPaths(r.text));
     }
   } else {
-    for (const r of toParse) scoCache.set(r.key, parseScoPaths(r.text));
+    for (const r of toParse) storeScoParsed(r.key, r.rel, parseScoPaths(r.text));
   }
 
-  return { scoCache, scoFound, scoMissing, scoBusstopFlags };
+  return { scoCache, scoFound, scoMissing, scoBusstopFlags, scoByFile };
 }
 
 function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, minTy, tileLayout) {
+  const tileOriginFor = (tileName) => {
+    const metric = tileLayout?.byName?.get(tileName.toLowerCase());
+    const coords = parseTileCoords(tileName);
+    if (metric) return getTileOriginFromMetric(metric, minTx, minTy);
+    if (coords) {
+      return getTileOriginFromMetric(
+        { x: coords[0], y: coords[1], layoutWorldX: 0, layoutWorldZ: 0, isGlobal: false },
+        minTx,
+        minTy,
+      );
+    }
+    return { x: 0, z: 0 };
+  };
+
   const splineItems = [];
   for (const sp of splines.values()) {
     const sliKey = sp.path.replace(/\\/g, "/").toLowerCase();
     const cached = sliCache.get(sliKey);
     const paths = cached?.size ? cached : DEFAULT_SLI_PATHS;
     splineItems.push({
-      sp,
+      sp: { ...sp, origin: tileOriginFor(sp.tile) },
       pathsEntries: [...paths.entries()],
       onlyEditor: sliOnlyEditor.get(sliKey) ?? false,
     });
@@ -1358,18 +1535,11 @@ function collectRailWorkItems(splines, objects, sliCache, sliOnlyEditor, minTx, 
   const objectItems = [];
   for (const obj of objects.values()) {
     if (!obj.paths?.size) continue;
-    const metric = tileLayout?.byName?.get(obj.tile.toLowerCase());
-    const coords = parseTileCoords(obj.tile);
-    const origin = metric
-      ? getTileOriginFromMetric(metric, minTx, minTy)
-      : coords
-        ? getTileOriginFromMetric(
-            { x: coords[0], y: coords[1], layoutWorldX: 0, layoutWorldZ: 0, isGlobal: false },
-            minTx,
-            minTy,
-          )
-        : { x: 0, z: 0 };
-    objectItems.push({ obj, origin, pathsEntries: [...obj.paths.entries()] });
+    objectItems.push({
+      obj,
+      origin: tileOriginFor(obj.tile),
+      pathsEntries: [...obj.paths.entries()],
+    });
   }
   return { splineItems, objectItems };
 }
@@ -1488,7 +1658,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   }
 
   onProgress("Cargando paths .sli…");
-  const { sliCache, sliOnlyEditor, sliFound, sliMissing } = await loadSliCache(
+  const { sliCache, sliOnlyEditor, sliFound, sliMissing, sliByFile } = await loadSliCache(
     splines,
     index,
     omsiPrefix,
@@ -1496,7 +1666,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
   );
 
   onProgress("Cargando paths .sco…");
-  const { scoCache, scoFound, scoMissing, scoBusstopFlags } = await loadScoCache(
+  const { scoCache, scoFound, scoMissing, scoBusstopFlags, scoByFile } = await loadScoCache(
     objects,
     index,
     omsiPrefix,
@@ -1526,6 +1696,8 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
     tileLayout,
     pool,
   );
+
+  const loadReport = buildRailLoadReport({ splines, objects, rails, sliByFile, scoByFile });
 
   const startCandidates = findFreeStartCandidates(rails);
   const omsiSpawn = findOmsiVehicleSpawnRails(rails, splines);
@@ -1670,6 +1842,7 @@ async function processMapFolderInner(fileMap, mapDir, onProgress, pool) {
     rails,
     busstops: busstopOut,
     routes,
+    loadReport,
     stats: {
       railCount: rails.length,
       freeStartCount: freeIds.size,

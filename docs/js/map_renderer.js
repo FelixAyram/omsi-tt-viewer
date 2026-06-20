@@ -170,10 +170,6 @@ export function drawRailsBatched(ctx, visibleItems, {
     const routeColors = routeRails.get(rail.id);
     const onRoute = routeColors && routeColors.length > 0;
 
-    if (freeOnly && !rail.freeStart) continue;
-    if (!showAll && !onRoute && !freeOnly) continue;
-    if (!showAll && freeOnly && !rail.freeStart && !onRoute) continue;
-
     let strokeStyle;
     let lineWidth;
     let glow = false;
@@ -185,14 +181,15 @@ export function drawRailsBatched(ctx, visibleItems, {
       strokeStyle = routeColors[0];
       lineWidth = styles.route.width;
       glow = !liteMode;
-    } else if (rail.freeStart && (showAll || freeOnly)) {
+    } else if (rail.freeStart && freeOnly) {
       strokeStyle = styles.freeStart.stroke;
       lineWidth = styles.freeStart.width;
       glow = !liteMode;
     } else {
-      const typ = styles.railTyp[rail.typ] || styles.railTyp[0];
+      const palette = rail.kind === "spline" ? styles.splineTyp : styles.railTyp;
+      const typ = palette[rail.typ] || palette[0];
       strokeStyle = typ.stroke;
-      lineWidth = styles.base.width;
+      lineWidth = rail.kind === "spline" ? styles.spline.width : styles.base.width;
     }
 
     const key = `${strokeStyle}|${lineWidth}|${glow ? 1 : 0}`;

@@ -1,20 +1,20 @@
-import { APP_VERSION } from "./version.js?v=44";
-import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=44";
+import { APP_VERSION } from "./version.js?v=46";
+import { loadMapLazy, validateOmsiInstall, listMapCatalog } from "./map_processor.js?v=46";
 import {
   pickOmsiRoot,
   pickMapFolder,
   pickOmsiAssetsRoot,
   pickGlobalCfgFile,
   scanMapsCatalogFromHandle,
-} from "./omsi_browser.js?v=44";
-import { RAIL_TYP, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=44";
+} from "./omsi_browser.js?v=46";
+import { RAIL_TYP, SPLINE_RAIL, ROUTE_PALETTE, FREE_START, BUSSTOP, SELECTED } from "./colors.js?v=46";
 import {
   buildRailSpatialIndex,
   queryVisibleRails,
   findRailNear,
   drawRailsBatched,
   visibleWorldRect,
-} from "./map_renderer.js?v=44";
+} from "./map_renderer.js?v=46";
 import {
   RailWebGLRenderer,
   buildGpuSegmentLayers,
@@ -22,7 +22,7 @@ import {
   buildGpuBusInstances,
   robustViewBounds,
   computeMapOrigin,
-} from "./map_webgl.js?v=44";
+} from "./map_webgl.js?v=46";
 import {
   initDebugPanel,
   debugClear,
@@ -32,7 +32,7 @@ import {
   describeFsaRoot,
   describeFsaMapHandle,
   appendSection,
-} from "./debug.js?v=44";
+} from "./debug.js?v=46";
 
 const LARGE_MAP_RAILS = 15000;
 
@@ -386,7 +386,9 @@ function draw() {
 
   const drawStyles = {
     railTyp: RAIL_TYP,
-    base: { width: lite ? 1 : Math.max(1.2, 1.5 * view.scale * 0.04) },
+    splineTyp: SPLINE_RAIL,
+    base: { width: lite ? 1.5 : Math.max(1.8, 2 * view.scale * 0.04) },
+    spline: { width: lite ? 2 : Math.max(2.4, 2.8 * view.scale * 0.05) },
     route: { width: lite ? 2 : Math.max(4, 3 * view.scale * 0.08) },
     freeStart: { width: lite ? 1.5 : Math.max(3, 2.5 * view.scale * 0.06), stroke: FREE_START.stroke },
     selected: { width: 4, stroke: SELECTED.stroke },
@@ -419,11 +421,11 @@ function draw() {
   }
 
   const total = data.stats?.railCount ?? data.rails.length;
-  if (lastDrawnVisible === 0 && total >= LARGE_MAP_RAILS && !showAll && selectedRoutes.size === 0) {
+  if (lastDrawnVisible === 0 && total > 0) {
     ctx.fillStyle = "#8b95a8";
     ctx.font = "14px Segoe UI, system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText("Mapa grande — activa capas o marca rutas .ttr para dibujar rieles", w / 2, h / 2);
+    ctx.fillText("Ningún riel en la vista actual — aleja el zoom o centra el mapa", w / 2, h / 2);
   }
 }
 
@@ -599,6 +601,48 @@ function formatLoadTiming(t) {
   return `${formatMs(t.totalMs)} total (paths ${formatMs(t.processMs)} · dibujo ${formatMs(t.drawMs)})`;
 }
 
+function logRailLoadReport(report) {
+  if (!report) return;
+  const { summary, splineRows, objectRows, lines } = report;
+  const panelMax = 120;
+  const panelLines =
+    lines.length <= panelMax
+      ? lines
+      : [...lines.slice(0, panelMax), `… (${lines.length - panelMax} líneas más en consola)`];
+  debugPrint(panelLines);
+
+  console.group("[OMSI] Diagnóstico splines / .sco");
+  console.log("Resumen:", summary);
+  console.groupCollapsed(`Splines (${splineRows.length}) — id · tile · .sli · paths → rieles`);
+  console.table(
+    splineRows.map((r) => ({
+      id: r.id,
+      tile: r.tile,
+      sli: r.sli,
+      sliPaths: r.sliPaths,
+      rails: r.rails,
+      missing: r.missing,
+      onlyEditor: r.onlyEditor,
+      defaultPath: r.usedDefault,
+    })),
+  );
+  console.groupEnd();
+  console.groupCollapsed(`Objects (${objectRows.length}) — id · tile · .sco · paths → rieles`);
+  console.table(
+    objectRows.map((r) => ({
+      id: r.id,
+      tile: r.tile,
+      sco: r.sco,
+      scoPaths: r.scoPaths,
+      rails: r.rails,
+      missing: r.missing,
+      busstop: r.busstop,
+    })),
+  );
+  console.groupEnd();
+  console.groupEnd();
+}
+
 async function applyData(json, timing = null) {
   data = json;
   selectedRailId = null;
@@ -628,6 +672,7 @@ async function applyData(json, timing = null) {
     try {
       const layers = await buildGpuSegmentLayers(json.rails, {
         railTyp: RAIL_TYP,
+        splineTyp: SPLINE_RAIL,
         freeStartHex: FREE_START.stroke,
         spawnSegmentFn: railSpawnSegment,
         origin: mapOrigin,
@@ -648,6 +693,7 @@ async function applyData(json, timing = null) {
 
   draw();
   const drawMs = performance.now() - drawStart;
+  if (json.loadReport) logRailLoadReport(json.loadReport);
   if (timing) {
     loadTiming = {
       processMs: timing.processMs ?? 0,
@@ -992,8 +1038,9 @@ canvas.addEventListener("pointercancel", () => {
 });
 
 function buildLegend() {
-  legendEl.innerHTML = Object.entries(RAIL_TYP)
-    .map(([k, v]) => `<span><i style="background:${v.stroke}"></i>${v.label}</span>`)
+  legendEl.innerHTML = `<span><i style="background:${SPLINE_RAIL[0].stroke}"></i>Spline .sli (typ 0)</span>`;
+  legendEl.innerHTML += Object.entries(RAIL_TYP)
+    .map(([k, v]) => `<span><i style="background:${v.stroke}"></i>Object .sco ${v.label}</span>`)
     .join("");
   legendEl.innerHTML += `<span><i style="background:${FREE_START.stroke}"></i>Inicio libre</span>`;
   legendEl.innerHTML += `<span><i style="background:${BUSSTOP.fill}"></i>Busstop</span>`;
